@@ -425,6 +425,8 @@ class RuleEngine {
   static String resolveUrl(String base, String link) {
     if (link.isEmpty) return link;
     if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://').hasMatch(link)) return link;
+    // data: 地址没有 host，不能拿 base 去 resolve。
+    if (link.startsWith('data:')) return link;
     if (link.startsWith('//')) {
       final scheme = base.startsWith('http://') ? 'http:' : 'https:';
       return '$scheme$link';

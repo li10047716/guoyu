@@ -32,11 +32,14 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net/http"
 	"net/url"
 	"strconv"
-	"time"
 	"strings"
+	"time"
 	"unicode/utf16"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"github.com/dop251/goja"
 )
@@ -94,14 +97,22 @@ func legadoByteOf(item interface{}) byte {
 // legadoStringOfBytes 把字节按 UTF-8 解成字符串。
 func legadoStringOfBytes(bytes []byte, charset string) string {
 	switch strings.ToLower(strings.TrimSpace(charset)) {
-	case "", "utf-8", "utf8", "us-ascii", "iso-8859-1":
+	case "", "utf-8", "utf8":
 		return string(bytes)
+	case "us-ascii", "iso-8859-1", "iso8859-1", "latin1", "8859_1":
+		// 单字节字符集：每个字节直接对上一个码点，不能走 UTF-8 解码。
+		var builder strings.Builder
+		builder.Grow(len(bytes))
+		for _, one := range bytes {
+			builder.WriteRune(rune(one))
+		}
+		return builder.String()
 	case "gbk", "gb2312", "gb18030":
 		if decoded, err := decodeNovelBytes(bytes); err == nil {
 			return decoded
 		}
 		return string(bytes)
-	case "utf-16", "utf16":
+	case "utf-16", "utf16", "utf-16be":
 		units := make([]uint16, 0, len(bytes)/2)
 		for index := 0; index+1 < len(bytes); index += 2 {
 			units = append(units, uint16(bytes[index])<<8|uint16(bytes[index+1]))
@@ -109,6 +120,47 @@ func legadoStringOfBytes(bytes []byte, charset string) string {
 		return string(utf16.Decode(units))
 	}
 	return string(bytes)
+}
+
+// legadoBytesOfString 把字符串按指定字符集编码成字节，对应 Java 的 String.getBytes(charset)。
+func legadoBytesOfString(text, charset string) []byte {
+	switch strings.ToLower(strings.TrimSpace(charset)) {
+	case "us-ascii", "iso-8859-1", "iso8859-1", "latin1", "8859_1":
+		out := make([]byte, 0, len(text))
+		for _, char := range text {
+			if char > 0xff {
+				out = append(out, '?')
+				continue
+			}
+			out = append(out, byte(char))
+		}
+		return out
+	case "gbk", "gb2312", "gb18030":
+		if encoded, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(text)); err == nil {
+			return encoded
+		}
+	}
+	return []byte(text)
+}
+
+// legadoCharsetName 取字符集参数的名字：既接受 'UTF-8' 这样的字符串，
+// 也接受 Charset.forName() 返回的对象。
+func legadoCharsetName(vm *goja.Runtime, value goja.Value) string {
+	if value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
+		return ""
+	}
+	if object := value.ToObject(vm); object != nil {
+		if name := object.Get("name"); name != nil && !goja.IsUndefined(name) {
+			if function, ok := goja.AssertFunction(name); ok {
+				if result, err := function(value); err == nil && result != nil {
+					return result.String()
+				}
+			} else if !goja.IsUndefined(name) {
+				return name.String()
+			}
+		}
+	}
+	return value.String()
 }
 
 // legadoClassObject 是「类」的共同外壳。
@@ -139,7 +191,7 @@ func legadoClassObject(vm *goja.Runtime, name string, statics map[string]interfa
 }
 
 // legadoPackagesObject 构造完整的 `Packages` 树，并返回按全名查类的函数。
-func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(string) goja.Value) {
+func legadoPackagesObject(vm *goja.Runtime, baseURL string, client *http.Client) (*goja.Object, func(string) goja.Value) {
 	registry := map[string]*goja.Object{}
 
 	register := func(name string, statics map[string]interface{}) *goja.Object {
@@ -161,14 +213,21 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 			case 1:
 				text = legadoStringOfBytes(legadoBytesOf(call.Argument(0)), "")
 			default:
-				text = legadoStringOfBytes(legadoBytesOf(call.Argument(0)), call.Argument(1).String())
+				text = legadoStringOfBytes(
+					legadoBytesOf(call.Argument(0)),
+					legadoCharsetName(vm, call.Argument(1)),
+				)
 			}
 			wrapper := vm.NewObject()
 			_ = wrapper.Set("value", text)
 			_ = wrapper.Set("toString", func(goja.FunctionCall) goja.Value { return vm.ToValue(text) })
 			_ = wrapper.Set("valueOf", func(goja.FunctionCall) goja.Value { return vm.ToValue(text) })
 			_ = wrapper.Set("getBytes", func(call goja.FunctionCall) goja.Value {
-				return vm.ToValue(legadoByteArray(vm, []byte(text)))
+				charset := ""
+				if len(call.Arguments) > 0 {
+					charset = legadoCharsetName(vm, call.Argument(0))
+				}
+				return vm.ToValue(legadoByteArray(vm, legadoBytesOfString(text, charset)))
 			})
 			_ = wrapper.Set("length", func(goja.FunctionCall) goja.Value { return vm.ToValue(len([]rune(text))) })
 			_ = wrapper.Set("toLowerCase", func(goja.FunctionCall) goja.Value {
@@ -421,10 +480,10 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 		return object
 	}
 	register("java.util.Base64", map[string]interface{}{
-		"getEncoder": func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Encoder(false, true)) },
-		"getUrlEncoder": func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Encoder(true, true)) },
-		"getDecoder": func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Decoder(false)) },
-		"getUrlDecoder": func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Decoder(true)) },
+		"getEncoder":     func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Encoder(false, true)) },
+		"getUrlEncoder":  func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Encoder(true, true)) },
+		"getDecoder":     func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Decoder(false)) },
+		"getUrlDecoder":  func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Decoder(true)) },
 		"getMimeEncoder": func(goja.FunctionCall) goja.Value { return vm.ToValue(base64Encoder(false, true)) },
 	})
 
@@ -517,6 +576,19 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 	register("java.security.SecureRandom", map[string]interface{}{
 		"__ctor": func(call goja.ConstructorCall) *goja.Object {
 			object := vm.NewObject()
+			// generateSeed(n)：返回 n 字节随机种子（DH 交换里当 IV 用）。
+			_ = object.Set("generateSeed", func(call goja.FunctionCall) goja.Value {
+				length := int(call.Argument(0).ToInteger())
+				if length <= 0 {
+					length = 16
+				}
+				if length > 4096 {
+					length = 4096
+				}
+				buffer := make([]byte, length)
+				_, _ = rand.Read(buffer)
+				return vm.ToValue(legadoByteArray(vm, buffer))
+			})
 			_ = object.Set("nextBytes", func(call goja.FunctionCall) goja.Value {
 				length := len(legadoBytesOf(call.Argument(0)))
 				buffer := make([]byte, length)
@@ -591,7 +663,7 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 				payload := legadoBytesOf(call.Argument(0))
 				result, err := legadoCipher(transformation, mode, key, iv, payload)
 				if err != nil {
-					panic(vm.NewGoError(err))
+					panic(vm.NewGoError(fmt.Errorf("%v（输入 %d 字节）%s", err, len(payload), legadoCallStack(vm))))
 				}
 				return vm.ToValue(legadoByteArray(vm, result))
 			})
@@ -610,10 +682,10 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 		"valueOf": func(call goja.FunctionCall) goja.Value {
 			return vm.ToValue(legadoWrapBigInt(vm, big.NewInt(call.Argument(0).ToInteger())))
 		},
-		"ONE": legadoWrapBigInt(vm, big.NewInt(1)),
+		"ONE":  legadoWrapBigInt(vm, big.NewInt(1)),
 		"ZERO": legadoWrapBigInt(vm, big.NewInt(0)),
-		"TWO": legadoWrapBigInt(vm, big.NewInt(2)),
-		"TEN": legadoWrapBigInt(vm, big.NewInt(10)),
+		"TWO":  legadoWrapBigInt(vm, big.NewInt(2)),
+		"TEN":  legadoWrapBigInt(vm, big.NewInt(10)),
 		"__ctor": func(call goja.ConstructorCall) *goja.Object {
 			value := new(big.Int)
 			first := call.Argument(0)
@@ -640,6 +712,19 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string) (*goja.Object, func(
 		},
 	}
 	register("java.math.BigInteger", bigStatics)
+
+	// ---- java.net.URL / HttpURLConnection ----
+	register("java.net.URL", map[string]interface{}{
+		"__ctor": func(call goja.ConstructorCall) *goja.Object {
+			address := strings.TrimSpace(call.Argument(0).String())
+			object := vm.NewObject()
+			_ = object.Set("toString", func(goja.FunctionCall) goja.Value { return vm.ToValue(address) })
+			_ = object.Set("openConnection", func(goja.FunctionCall) goja.Value {
+				return vm.ToValue(legadoURLConnection(vm, client, address))
+			})
+			return object
+		},
+	})
 
 	// ---- java.nio.charset.Charset ----
 	charsetStatics := map[string]interface{}{
@@ -891,6 +976,24 @@ func legadoWrapBigInt(vm *goja.Runtime, value *big.Int) *goja.Object {
 	binary("xor", (*big.Int).Xor)
 	binary("remainder", (*big.Int).Rem)
 	binary("pow", func(out, left, right *big.Int) *big.Int { return out.Exp(left, right, nil) })
+	// modPow(exponent, modulus)：DH 交换里必用。
+	_ = object.Set("modPow", func(call goja.FunctionCall) goja.Value {
+		exponent := legadoBigIntOf(call.Argument(0))
+		modulus := legadoBigIntOf(call.Argument(1))
+		return vm.ToValue(legadoWrapBigInt(vm, new(big.Int).Exp(copyValue(), exponent, modulus)))
+	})
+	_ = object.Set("modInverse", func(call goja.FunctionCall) goja.Value {
+		modulus := legadoBigIntOf(call.Argument(0))
+		inverse := new(big.Int).ModInverse(copyValue(), modulus)
+		if inverse == nil {
+			panic(vm.NewGoError(fmt.Errorf("BigInteger 没有模逆元")))
+		}
+		return vm.ToValue(legadoWrapBigInt(vm, inverse))
+	})
+	_ = object.Set("signum", func(goja.FunctionCall) goja.Value { return vm.ToValue(int64(value.Sign())) })
+	_ = object.Set("testBit", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(value.Bit(int(call.Argument(0).ToInteger())) != 0)
+	})
 	binary("shiftLeft", func(out, left, right *big.Int) *big.Int { return out.Lsh(left, uint(right.Int64())) })
 	binary("shiftRight", func(out, left, right *big.Int) *big.Int { return out.Rsh(left, uint(right.Int64())) })
 	_ = object.Set("negate", func(goja.FunctionCall) goja.Value {
@@ -1079,7 +1182,191 @@ func parseInt64(text string, radix int) (int64, error) {
 }
 
 func legadoNowMillis() int64 { return time.Now().UnixMilli() }
-
-func legadoNowNanos() int64 { return time.Now().UnixNano() }
+func legadoNowNanos() int64  { return time.Now().UnixNano() }
 
 func pow(base, exponent float64) float64 { return math.Pow(base, exponent) }
+
+// legadoStreamObject 把一段字节包成 InputStream（InputStreamReader 只认 __bytes）。
+func legadoStreamObject(vm *goja.Runtime, data []byte) *goja.Object {
+	object := vm.NewObject()
+	_ = object.Set("__bytes", legadoByteArray(vm, data))
+	_ = object.Set("close", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = object.Set("available", func(goja.FunctionCall) goja.Value { return vm.ToValue(int64(len(data))) })
+	return object
+}
+
+// legadoURLConnection 复刻 java.net.HttpURLConnection 的常用子集。
+//
+// 脚本的写法是「先 setRequestMethod / setRequestProperty / getOutputStream 写 body，
+// 再 getResponseCode 取状态」，所以真正的请求在第一次读响应时才发出去。
+func legadoURLConnection(vm *goja.Runtime, client *http.Client, address string) *goja.Object {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	method := "GET"
+	headers := map[string]string{}
+	var body bytes.Buffer
+	var response *http.Response
+	var payload, failurePayload []byte
+	sent := false
+
+	send := func() error {
+		if sent {
+			return nil
+		}
+		sent = true
+		var reader io.Reader
+		if body.Len() > 0 {
+			reader = bytes.NewReader(body.Bytes())
+		}
+		request, err := http.NewRequest(method, address, reader)
+		if err != nil {
+			return err
+		}
+		for key, value := range headers {
+			request.Header.Set(key, value)
+		}
+		if request.Header.Get("User-Agent") == "" {
+			request.Header.Set("User-Agent", legadoDefaultUA)
+		}
+		result, err := client.Do(request)
+		if err != nil {
+			return err
+		}
+		response = result
+		raw, readErr := io.ReadAll(io.LimitReader(result.Body, 32<<20))
+		_ = result.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if result.StatusCode >= 400 {
+			failurePayload = raw
+		} else {
+			payload = raw
+		}
+		return nil
+	}
+
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	connection := vm.NewObject()
+	_ = connection.Set("setRequestMethod", func(call goja.FunctionCall) goja.Value {
+		method = strings.ToUpper(strings.TrimSpace(call.Argument(0).String()))
+		return goja.Undefined()
+	})
+	_ = connection.Set("getRequestMethod", func(goja.FunctionCall) goja.Value { return vm.ToValue(method) })
+	for _, name := range []string{
+		"setDoOutput", "setDoInput", "setUseCaches", "setInstanceFollowRedirects",
+		"setConnectTimeout", "setReadTimeout", "setDefaultUseCaches", "disconnect",
+	} {
+		_ = connection.Set(name, noop)
+	}
+	setProperty := func(call goja.FunctionCall) goja.Value {
+		name := strings.TrimSpace(call.Argument(0).String())
+		value := call.Argument(1).String()
+		if name == "" {
+			return goja.Undefined()
+		}
+		if existing, ok := headers[name]; ok && existing != "" {
+			headers[name] = existing + ", " + value
+			return goja.Undefined()
+		}
+		headers[name] = value
+		return goja.Undefined()
+	}
+	_ = connection.Set("setRequestProperty", func(call goja.FunctionCall) goja.Value {
+		name := strings.TrimSpace(call.Argument(0).String())
+		if name != "" {
+			headers[name] = call.Argument(1).String()
+		}
+		return goja.Undefined()
+	})
+	_ = connection.Set("addRequestProperty", setProperty)
+	_ = connection.Set("getOutputStream", func(goja.FunctionCall) goja.Value {
+		stream := vm.NewObject()
+		_ = stream.Set("write", func(call goja.FunctionCall) goja.Value {
+			data := legadoBytesOf(call.Argument(0))
+			if len(call.Arguments) >= 3 {
+				offset := int(call.Argument(1).ToInteger())
+				length := int(call.Argument(2).ToInteger())
+				if offset < 0 {
+					offset = 0
+				}
+				if offset > len(data) {
+					offset = len(data)
+				}
+				end := offset + length
+				if end > len(data) || end < offset {
+					end = len(data)
+				}
+				data = data[offset:end]
+			}
+			body.Write(data)
+			return goja.Undefined()
+		})
+		_ = stream.Set("flush", noop)
+		_ = stream.Set("close", noop)
+		return vm.ToValue(stream)
+	})
+	_ = connection.Set("getResponseCode", func(goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(int64(response.StatusCode))
+	})
+	_ = connection.Set("getResponseMessage", func(goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(response.Status)
+	})
+	_ = connection.Set("getHeaderField", func(call goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			return goja.Null()
+		}
+		value := response.Header.Get(call.Argument(0).String())
+		if value == "" {
+			return goja.Null()
+		}
+		return vm.ToValue(value)
+	})
+	_ = connection.Set("getContentLength", func(goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			return vm.ToValue(int64(-1))
+		}
+		return vm.ToValue(response.ContentLength)
+	})
+	_ = connection.Set("getInputStream", func(goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(legadoStreamObject(vm, payload))
+	})
+	_ = connection.Set("getErrorStream", func(goja.FunctionCall) goja.Value {
+		if err := send(); err != nil {
+			return goja.Null()
+		}
+		if len(failurePayload) == 0 {
+			return goja.Null()
+		}
+		return vm.ToValue(legadoStreamObject(vm, failurePayload))
+	})
+	return connection
+}
+
+// legadoCallStack 把当前 JS 调用栈拼成一行，脚本里报错时用来定位是谁调用的。
+func legadoCallStack(vm *goja.Runtime) string {
+	frames := vm.CaptureCallStack(3, nil)
+	if len(frames) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString(" | 调用栈:")
+	for index, frame := range frames {
+		if index >= 6 {
+			break
+		}
+		position := frame.Position()
+		builder.WriteString(fmt.Sprintf(" %s@%d:%d", frame.FuncName(), position.Line, position.Column))
+	}
+	return builder.String()
+}

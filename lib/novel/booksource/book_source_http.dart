@@ -73,6 +73,13 @@ class BookSourceHttp {
     var currentMethod = method.toUpperCase();
     var currentBody = body;
 
+    // `data:;base64,...` 在书源里常用来塞常量（分类页、公告、内置书单），
+    // 不需要发请求，直接把内容当响应体。
+    final inline = decodeDataUri(url);
+    if (inline != null) {
+      return FetchResult(body: inline, url: url, status: 200);
+    }
+
     for (var hop = 0; hop <= 6; hop++) {
       final sent = await _send(
         currentUrl,
@@ -102,6 +109,30 @@ class BookSourceHttp {
       }
     }
     throw FetchFailure('重定向次数过多：$url');
+  }
+
+  /// `data:` 地址的内联内容；不是 data 地址返回 null。
+  ///
+  /// 书源作者常用 `data:;base64,<base64>` 当常量目录或内置书单，
+  /// Legado 也把它当普通响应处理。
+  static String? decodeDataUri(String address) {
+    if (!address.startsWith('data:')) return null;
+    final comma = address.indexOf(',');
+    if (comma < 0) return null;
+    final meta = address.substring(5, comma).toLowerCase();
+    final payload = address.substring(comma + 1);
+    if (meta.endsWith('base64')) {
+      try {
+        return utf8.decode(base64.decode(payload), allowMalformed: true);
+      } catch (_) {
+        return null;
+      }
+    }
+    try {
+      return Uri.decodeComponent(payload);
+    } catch (_) {
+      return payload;
+    }
   }
 
   static Future<({FetchResult result, String? location})> _send(

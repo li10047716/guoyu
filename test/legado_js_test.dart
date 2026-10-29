@@ -6,6 +6,7 @@
 /// 找不到 DLL 时整组跳过，CI 上不会失败。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:duanju_app/core/core_bridge.dart';
@@ -140,6 +141,77 @@ void main() {
         return typeof md.getInstance;
       ''');
       expect(value, 'function');
+    });
+
+    test('ISO-8859-1 编解码往返（番茄源签名依赖）', () async {
+      // 0x00..0xFF 每个字节都要原样还原，一旦按 UTF-8 走长度就会膨胀。
+      final value = await run('''
+        var latin1 = Packages.java.nio.charset.Charset.forName('ISO-8859-1');
+        var text = new Packages.java.lang.String([0, 65, 127, 128, 195, 169, 255], latin1);
+        var back = text.getBytes(latin1);
+        var utf8 = new Packages.java.lang.String([0xe4, 0xbd, 0xa0], 'UTF-8');
+        return text.length() + '|' + back.length + '|' + back.join(',') + '|' + utf8.toString();
+      ''');
+      expect(value, '7|7|0,65,127,128,195,169,255|你');
+    });
+
+    test('BigInteger.modPow 与 toByteArray', () async {
+      final value = await run('''
+        var base = Packages.java.math.BigInteger.valueOf(2);
+        var mod = Packages.java.math.BigInteger.valueOf(1000);
+        var result = base.modPow(Packages.java.math.BigInteger.valueOf(10), mod);
+        return result.toString() + '|' + result.bitLength();
+      ''');
+      expect(value, '24|5');
+    });
+
+    test('source.put 写下的变量会回传', () async {
+      final data = await evalLegadoScript({
+        'code': "source.put('token', 'abc'); return source.get('token');",
+        'jsLib': '',
+        'key': '',
+        'page': 1,
+        'baseUrl': 'https://example.com',
+        'result': '',
+        'extras': <String, String>{},
+        'source': {
+          'key': 'test',
+          'name': '测试',
+          'url': 'https://example.com',
+          'header': '',
+          'variables': <String, String>{},
+        },
+      });
+      expect('${data['value']}', 'abc');
+      expect((data['variables'] as Map)['token'], 'abc');
+    });
+
+    test('java.net.URL + HttpURLConnection 能 POST 并读回响应', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((HttpRequest request) async {
+        final body = await utf8.decoder.bind(request).join();
+        request.response.write('got:${request.method}:$body');
+        await request.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+      final value = await run('''
+        var conn = new Packages.java.net.URL('http://127.0.0.1:${server.port}/post').openConnection();
+        conn.setRequestMethod('POST');
+        conn.setDoOutput(true);
+        conn.setRequestProperty('Content-Type', 'text/plain');
+        var out = conn.getOutputStream();
+        out.write([104, 105]);
+        out.flush();
+        out.close();
+        var code = conn.getResponseCode();
+        var reader = new Packages.java.io.BufferedReader(
+          new Packages.java.io.InputStreamReader(conn.getInputStream(), 'UTF-8'));
+        var text = '';
+        var line;
+        while ((line = reader.readLine()) != null) text += String(line);
+        return code + '|' + text;
+      ''');
+      expect(value, '200|got:POST:hi');
     });
   });
 }

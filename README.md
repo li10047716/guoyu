@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.70+130** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.71+131** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,7 +14,31 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.70）
+## 二、本次更新（0.7.71）
+
+**番茄小说（APP 接口）书源跑通了** —— 这类源要签名（x-argus / x-ladon）和 DH 通道解密，
+依赖一整套 Java 类库语义，之前卡在第一步。
+
+- **大 jsLib 能送进去了**：书源请求包原来有 1MB 上限，而番茄源的 `jsLib` 有 1.4MB，
+  一发出去就被判「请求格式无效」。上限提到 16MB，并且 jsLib 只在首次发送、之后按 key 命中原生侧缓存
+  （缓存被淘汰会自动补发），不再每次都搬 1.4MB。
+- **`String.getBytes(charset)` 按字符集编码**：原来不管参数一律按 UTF-8 走，
+  `ISO-8859-1` 往返时高位字节被撑成两字节，AES 加密长度就不是 16 的整数倍，
+  直接报「数据长度不是块大小的整数倍」。现在 latin1 / US-ASCII / GBK / UTF-16 都按字符集走。
+- **补 `java.net.URL` + `HttpURLConnection`**：`openConnection()` / `setRequestMethod` /
+  `setRequestProperty` / `getOutputStream().write(bytes, off, len)` / `getResponseCode` /
+  `getInputStream` / `getErrorStream` / `getHeaderField`，签名类脚本自己发请求的那条路打通。
+- **补 `BigInteger.modPow` / `modInverse` / `signum` / `testBit`**（DH 交换必用），
+  `SecureRandom.generateSeed(n)`，`source.put()` 写法（等价 `setVariable`，变量会随书源存盘）。
+- **`data:` 内联地址**：`data:;base64,...` 现在直接当响应体返回（Dart 网络层与 `java.ajax` 都支持），
+  书源用常量目录/内置书单的源不再报「地址不合法」。
+
+实测：`🍅番茄小说(APP)` 源导入后全链路可用 ——
+搜「诡秘之主」10 本 → 268 章 → 正文正常，搜「十日终焉」10 本 → 1496 章。
+其余抽样 29 个书源通过数保持 7 个不变（无退化）。
+
+### 0.7.70：jsoup 与 Java 类库子集
+
 
 把书源脚本里的 **jsoup** 和 **Java 类库**补齐，可用书源的覆盖面再扩一圈。
 
@@ -654,6 +678,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
 | 0.7.70 | 2026-10-29 | 小说：书源脚本补 jsoup（org.jsoup、元素级 result、Elements 集合）与 Java 类库子集（String/Arrays/Base64/MessageDigest/BigInteger/Cipher/GZIP…），顶层 return 兼容、选择器容错；实测全链路通过源 5 → 7 |
+| 0.7.71 | 2026-10-29 | 小说：书源请求包上限 1MB→16MB、jsLib 原生侧缓存；`String.getBytes(charset)` 按字符集编码（修 AES 块长度报错）；补 `java.net.URL`/`HttpURLConnection`、`BigInteger.modPow`、`SecureRandom.generateSeed`、`source.put`、`data:` 内联地址；**番茄小说(APP) 源全链路跑通** |
 | 0.7.69 | 2026-10-29 | 小说：书源内置 JS 引擎（goja，三端共用）——`@js:` 规则、同步 `java.ajax/post`、base64/md5/cookie/变量、列表规则返回 JSON 数组、`result` 语义对齐；修相对 searchUrl、中文 header 崩溃、可选 JS 字段误判、POST 重定向 |
 | 0.7.50 | 2026-10-28 | 新增站源奈飞工厂（电影 / 连续剧 / 漫剧 / 综艺 / 纪录片五档全接入，列表走 JSON 接口，多线路自动兜底，直链 m3u8） |
 | 0.7.51 | 2026-10-28 | 奈飞工厂搜索改走结果页，可翻页到全量（原来联想接口硬上限 20 条且不分页） |

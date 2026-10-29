@@ -51,6 +51,9 @@ type LegadoJsRequest struct {
 	Code string `json:"code"`
 	// JsLib 书源的 jsLib，执行前先跑一遍。
 	JsLib string `json:"jsLib"`
+	// JsLibKey 是 JsLib 的缓存键（书源 key + 内容摘要）。带上它以后，
+	// 后续请求可以只传键、不重复传几百 KB~几 MB 的库源码。
+	JsLibKey string `json:"jsLibKey"`
 	// Key / Page 搜索关键词与页码。
 	Key  string `json:"key"`
 	Page int    `json:"page"`
@@ -113,6 +116,50 @@ type legadoHttpOptions struct {
 	Headers map[string]string `json:"headers"`
 }
 
+// legadoJsLibCache 缓存书源 jsLib：番茄这类源单个库就有 1.4MB，
+// 每章正文都重新传一遍不现实，Dart 侧发一次后只发 JsLibKey。
+var (
+	legadoJsLibMu    sync.Mutex
+	legadoJsLibCache = map[string]string{}
+	legadoJsLibOrder []string
+)
+
+const (
+	legadoJsLibCacheLimit = 32
+	// legadoJsLibMissing 是「只发了键、本地没缓存」的错误前缀，Dart 侧据此重发整库。
+	legadoJsLibMissing = "jsLib-missing:"
+)
+
+// resolveLegadoJsLib 取本次要执行的 jsLib：优先用请求里带的，其次查缓存。
+func resolveLegadoJsLib(req LegadoJsRequest) (string, error) {
+	key := strings.TrimSpace(req.JsLibKey)
+	if strings.TrimSpace(req.JsLib) == "" {
+		if key == "" {
+			return "", nil
+		}
+		legadoJsLibMu.Lock()
+		defer legadoJsLibMu.Unlock()
+		lib, ok := legadoJsLibCache[key]
+		if !ok {
+			return "", fmt.Errorf("%s%s", legadoJsLibMissing, key)
+		}
+		return lib, nil
+	}
+	if key != "" {
+		legadoJsLibMu.Lock()
+		if _, exists := legadoJsLibCache[key]; !exists {
+			for len(legadoJsLibOrder) >= legadoJsLibCacheLimit {
+				delete(legadoJsLibCache, legadoJsLibOrder[0])
+				legadoJsLibOrder = legadoJsLibOrder[1:]
+			}
+			legadoJsLibOrder = append(legadoJsLibOrder, key)
+		}
+		legadoJsLibCache[key] = req.JsLib
+		legadoJsLibMu.Unlock()
+	}
+	return req.JsLib, nil
+}
+
 // EvalLegadoScript 执行一段书源脚本，返回字符串结果。
 func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	resp.Variables = map[string]string{}
@@ -122,6 +169,12 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 			resp.Error = fmt.Sprintf("脚本执行异常：%v", r)
 		}
 	}()
+
+	jsLib, libErr := resolveLegadoJsLib(req)
+	if libErr != nil {
+		resp.Error = libErr.Error()
+		return resp
+	}
 
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
@@ -344,7 +397,7 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	orgObj := vm.NewObject()
 	_ = orgObj.Set("jsoup", legadoJsoupObject(vm, req.BaseURL))
 	_ = vm.Set("org", orgObj)
-	packagesObj, javaResolver := legadoPackagesObject(vm, req.BaseURL)
+	packagesObj, javaResolver := legadoPackagesObject(vm, req.BaseURL, client)
 	_ = vm.Set("Packages", packagesObj)
 	javaNamespace := vm.NewObject()
 	_ = javaNamespace.Set("type", legadoJavaType(vm, javaResolver))
@@ -400,23 +453,43 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 		state.variables[call.Argument(0).String()] = call.Argument(1).String()
 		return goja.Undefined()
 	})
+	// Legado 3.x 的写法：source.put(k, v) 与 setVariable 等价。
+	_ = sourceObj.Set("put", func(call goja.FunctionCall) goja.Value {
+		state.variables[call.Argument(0).String()] = call.Argument(1).String()
+		return goja.Undefined()
+	})
 	_ = vm.Set("source", sourceObj)
 
 	// ---- book 对象 ----
 	bookObj := vm.NewObject()
+	bookVars := map[string]string{}
 	if req.Book != nil {
+		for key, value := range req.Book.Vars {
+			bookVars[key] = value
+		}
 		_ = bookObj.Set("name", req.Book.Name)
 		_ = bookObj.Set("author", req.Book.Author)
 		_ = bookObj.Set("bookUrl", req.Book.URL)
-		_ = bookObj.Set("getVariable", func(call goja.FunctionCall) goja.Value {
-			return vm.ToValue(req.Book.Vars[call.Argument(0).String()])
-		})
 	}
+	_ = bookObj.Set("getVariable", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(bookVars[call.Argument(0).String()])
+	})
+	_ = bookObj.Set("get", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(bookVars[call.Argument(0).String()])
+	})
+	_ = bookObj.Set("put", func(call goja.FunctionCall) goja.Value {
+		bookVars[call.Argument(0).String()] = call.Argument(1).String()
+		return goja.Undefined()
+	})
+	_ = bookObj.Set("setVariable", func(call goja.FunctionCall) goja.Value {
+		bookVars[call.Argument(0).String()] = call.Argument(1).String()
+		return goja.Undefined()
+	})
 	_ = vm.Set("book", bookObj)
 
 	// ---- 执行 jsLib ----
-	if strings.TrimSpace(req.JsLib) != "" {
-		if _, err := vm.RunString(req.JsLib); err != nil {
+	if strings.TrimSpace(jsLib) != "" {
+		if _, err := vm.RunString(jsLib); err != nil {
 			resp.Error = "jsLib 执行失败：" + shortErr(err)
 			return resp
 		}
@@ -474,6 +547,10 @@ func (s *legadoRuntimeState) doRequest(raw string) (string, error) {
 	address, options := splitLegadoRequest(raw)
 	if address == "" {
 		return "", fmt.Errorf("空地址")
+	}
+	// data: 地址是内联内容（书源常用来塞常量），不需要发请求。
+	if strings.HasPrefix(address, "data:") {
+		return decodeLegadoDataURI(address), nil
 	}
 	if !strings.Contains(address, "://") {
 		address = resolveAgainst(s.source.URL, address)
@@ -578,6 +655,9 @@ func resolveAgainst(base, link string) string {
 	if link == "" {
 		return link
 	}
+	if strings.HasPrefix(link, "data:") {
+		return link
+	}
 	if strings.HasPrefix(link, "//") {
 		return "https:" + link
 	}
@@ -590,6 +670,30 @@ func resolveAgainst(base, link string) string {
 		return link
 	}
 	return parsedBase.ResolveReference(parsedLink).String()
+}
+
+// decodeLegadoDataURI 解 `data:;base64,xxx` 这类内联地址。
+func decodeLegadoDataURI(address string) string {
+	comma := strings.Index(address, ",")
+	if comma < 0 {
+		return ""
+	}
+	meta := strings.ToLower(address[5:comma])
+	payload := address[comma+1:]
+	if strings.HasSuffix(meta, "base64") {
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			if raw, rawErr := base64.RawStdEncoding.DecodeString(payload); rawErr == nil {
+				return string(raw)
+			}
+			return ""
+		}
+		return string(decoded)
+	}
+	if unescaped, err := url.QueryUnescape(payload); err == nil {
+		return unescaped
+	}
+	return payload
 }
 
 func applyHeaderJSON(request *http.Request, raw string) {
@@ -680,7 +784,6 @@ func shortErr(err error) string {
 	}
 	return text
 }
-
 
 // legadoWebViewUA 是 java.getWebViewUA() 的返回值。
 //

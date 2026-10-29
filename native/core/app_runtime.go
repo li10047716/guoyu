@@ -282,7 +282,9 @@ func NativeRequest(raw string) (result string) {
 		}
 	}()
 	var input nativeInput
-	if len(raw) > 1<<20 || json.Unmarshal([]byte(raw), &input) != nil {
+	// 书源脚本包会带上 jsLib（番茄源单个就有 1.4MB），上限放到 16MB；
+	// 普通业务请求远小于这个量级，不影响防护效果。
+	if len(raw) > 16<<20 || json.Unmarshal([]byte(raw), &input) != nil {
 		return `{"ok":false,"error":"请求格式无效"}`
 	}
 	data, err := nativeDispatch(input)

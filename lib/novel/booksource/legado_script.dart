@@ -47,9 +47,18 @@ class LegadoScript {
     String bookAuthor = '',
   }) async {
     if (code.trim().isEmpty) return const LegadoScriptResult(value: '');
+
+    // jsLib 可能很大（番茄源的库有 1.4MB），同一份只发一次，
+    // 之后只发缓存键，由原生侧按 key 取回。
+    final jsLib = _jsLibOf(source);
+    final jsLibKey = jsLib.isEmpty ? '' : _jsLibKeyOf(source, jsLib);
+    final sendLib = jsLib.isNotEmpty && _sentJsLib[source.key] != jsLibKey;
+    if (sendLib) _sentJsLib[source.key] = jsLibKey;
+
     final payload = <String, dynamic>{
       'code': code,
-      'jsLib': _jsLibOf(source),
+      'jsLib': sendLib ? jsLib : '',
+      'jsLibKey': jsLibKey,
       'key': key,
       'page': page,
       'baseUrl': baseUrl.isEmpty ? source.url : baseUrl,
@@ -71,7 +80,17 @@ class LegadoScript {
       },
     };
 
-    final data = await evalLegadoScript(payload);
+    Map<String, dynamic> data;
+    try {
+      data = await evalLegadoScript(payload);
+    } on AppFailure catch (error) {
+      // 原生侧的缓存被淘汰了（只发了键），补发整库重试一次。
+      if (!error.message.contains('jsLib-missing') || jsLib.isEmpty) rethrow;
+      _sentJsLib.remove(source.key);
+      payload['jsLib'] = jsLib;
+      data = await evalLegadoScript(payload);
+      _sentJsLib[source.key] = jsLibKey;
+    }
     final variables = <String, String>{};
     final rawVars = data['variables'];
     if (rawVars is Map) {
@@ -100,4 +119,10 @@ class LegadoScript {
     final raw = source.raw['jsLib'];
     return raw is String ? raw : '';
   }
+
+  /// 已经发过 jsLib 的书源（sourceKey → 指纹），同进程内不重复传大字符串。
+  static final Map<String, String> _sentJsLib = {};
+
+  static String _jsLibKeyOf(BookSource source, String jsLib) =>
+      '${source.key}:${jsLib.length}:${jsLib.hashCode}';
 }
