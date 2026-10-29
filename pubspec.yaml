@@ -1,7 +1,7 @@
 name: duanju_app
 description: 独立运行的多端短剧应用
 publish_to: none
-version: 0.7.67+127
+version: 0.7.68+128
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -25,6 +25,8 @@ dependencies:
   window_manager: ^0.5.1
   nsd: 5.0.1
   url_launcher: ^6.3.1
+  html: ^0.15.7
+  fast_gbk: ^1.0.0
 
 dev_dependencies:
   flutter_test:

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/novel_gateway.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_reader_screen.dart';
 import 'package:duanju_app/novel/novel_store.dart';
@@ -27,6 +28,8 @@ class NovelDetailScreen extends StatefulWidget {
 }
 
 class _NovelDetailScreenState extends State<NovelDetailScreen> {
+  late final NovelGateway _gateway = NovelGateway(widget.repository);
+
   NovelBook? _book;
   String? _error;
   bool _loading = true;
@@ -68,7 +71,7 @@ class _NovelDetailScreenState extends State<NovelDetailScreen> {
     try {
       final book = widget.novel.isLocal
           ? await _loadLocalBook()
-          : await widget.repository.novelDetail(widget.novel.id);
+          : await _gateway.detail(widget.novel.id);
       if (!mounted) return;
       setState(() {
         _book = book;
@@ -138,7 +141,7 @@ class _NovelDetailScreenState extends State<NovelDetailScreen> {
         final chapter = chapters[index];
         try {
           if (!await NovelCache.has(_novel.key, chapter.id)) {
-            final text = await widget.repository.novelContent(
+            final text = await _gateway.content(
               widget.novel.id,
               chapter.id,
             );

@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/book_source_screen.dart';
+import 'package:duanju_app/novel/booksource/book_source_store.dart';
+import 'package:duanju_app/novel/booksource/novel_gateway.dart';
 import 'package:duanju_app/novel/novel_detail_screen.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_store.dart';
@@ -58,6 +61,9 @@ class NovelHomeScreen extends StatefulWidget {
 class _NovelHomeScreenState extends State<NovelHomeScreen> {
   final _search = TextEditingController();
   final _focus = FocusNode();
+
+  /// 数据入口：内置站源走核心，自定义书源走本地规则引擎（0.7.68）。
+  late final NovelGateway _gateway = NovelGateway(widget.repository);
 
   List<Novel> _results = const [];
   bool _searching = false;
@@ -130,12 +136,22 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       _searched = true;
     });
     try {
-      final items = await widget.repository.novelSearch(query);
+      final items = await _gateway.search(query);
       if (!mounted) return;
       setState(() {
         _results = items;
         _searching = false;
       });
+      if (_gateway.lastFailures.isNotEmpty) {
+        final names = _gateway.lastFailures.take(3).map((f) => f.sourceName).join('、');
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(
+            content: Text('$names 没有返回结果'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -153,6 +169,21 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       ),
     );
     if (mounted) setState(() {});
+  }
+
+  /// 搜索结果副标题里显示书源名（自定义源才显示）。
+  String _sourceLabel(Novel novel) {
+    if (!novel.source.startsWith('bs:')) return '';
+    final key = novel.source.substring(3);
+    return BookSourceStore.instance.byKey(key)?.name ?? '自定义源';
+  }
+
+  Future<void> _openBookSources() async {
+    await BookSourceStore.instance.ensureLoaded();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const BookSourceScreen()),
+    );
   }
 
   void _notYet(String label) {
@@ -552,6 +583,8 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
             _enterSelection();
           case 'manage-groups':
             unawaited(_manageGroups());
+          case 'sources':
+            unawaited(_openBookSources());
           default:
             _notYet(value);
         }
@@ -574,6 +607,16 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
               Icon(Icons.checklist_rounded, size: 16),
               SizedBox(width: 8),
               Text('批量管理', style: TextStyle(fontSize: 13)),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'sources',
+          child: Row(
+            children: [
+              Icon(Icons.travel_explore_rounded, size: 16),
+              SizedBox(width: 8),
+              Text('书源管理…', style: TextStyle(fontSize: 13)),
             ],
           ),
         ),
@@ -974,9 +1017,11 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
             overflow: TextOverflow.ellipsis,
           ),
           subtitle: Text(
-            [novel.author.isEmpty ? '佚名' : novel.author, novel.category]
-                .where((item) => item.isNotEmpty)
-                .join(' · '),
+            [
+              novel.author.isEmpty ? '佚名' : novel.author,
+              novel.category,
+              _sourceLabel(novel),
+            ].where((item) => item.isNotEmpty).join(' · '),
             style: const TextStyle(fontSize: 12),
           ),
           trailing: const Icon(Icons.chevron_right_rounded),

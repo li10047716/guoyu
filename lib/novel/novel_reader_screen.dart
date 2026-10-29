@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/novel_gateway.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_store.dart';
 
@@ -43,6 +44,7 @@ class NovelReaderScreen extends StatefulWidget {
 }
 
 class _NovelReaderScreenState extends State<NovelReaderScreen> {
+  late final NovelGateway _gateway = NovelGateway(widget.repository);
   final _scroll = ScrollController();
   final _pager = PageController();
   late final List<NovelChapterItem> _chapters = widget.chapters;
@@ -131,10 +133,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
     }
     final cached = await NovelCache.read(widget.novel.key, chapter.id);
     if (cached != null) return cached;
-    final text = await widget.repository.novelContent(
-      widget.novel.id,
-      chapter.id,
-    );
+    final text = await _gateway.content(widget.novel.id, chapter.id);
     unawaited(NovelCache.write(widget.novel.key, text));
     return text;
   }
