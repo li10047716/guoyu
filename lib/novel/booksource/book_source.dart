@@ -48,6 +48,77 @@ extension BookSourceStatusLabel on BookSourceStatus {
       this == BookSourceStatus.ready || this == BookSourceStatus.needsJs;
 }
 
+/// `exploreUrl` 里的一条发现条目。
+///
+/// Legado 的写法是一段多行文本，每行 `名称::地址`（可带第三段样式），
+/// 地址留空的那行是**分组标题**：
+///
+/// ```
+/// 📊 排行榜::
+/// 🔥 推荐榜::https://example.com?t=rank&algo=101
+/// ```
+class BookSourceExploreEntry {
+  const BookSourceExploreEntry({
+    required this.name,
+    required this.url,
+    this.group = '',
+  });
+
+  final String name;
+  final String url;
+
+  /// 所属分组（分组标题之前的最近一个标题）。
+  final String group;
+
+  /// 分组标题本身（不可点，只用来分隔）。
+  bool get isHeader => url.trim().isEmpty;
+
+  /// 解析整段 `exploreUrl`。
+  ///
+  /// 兼容三种常见写法：
+  /// - `名称::地址`
+  /// - `名称::地址::样式`（第三段忽略）
+  /// - 单行只有地址（名称取地址本身）
+  static List<BookSourceExploreEntry> parseList(String raw) {
+    final out = <BookSourceExploreEntry>[];
+    if (raw.trim().isEmpty) return out;
+    var group = '';
+    for (final line in raw.split(RegExp(r'\r?\n'))) {
+      final text = line.trim();
+      if (text.isEmpty) continue;
+      final parts = text.split('::');
+      if (parts.length == 1) {
+        // 只有地址：当作一条无分组的条目
+        if (text.contains('://') || text.startsWith('/')) {
+          out.add(BookSourceExploreEntry(name: _labelOfUrl(text), url: text));
+        }
+        continue;
+      }
+      final name = parts[0].trim();
+      final url = parts[1].trim();
+      if (url.isEmpty) {
+        group = name;
+        out.add(BookSourceExploreEntry(name: name, url: '', group: group));
+        continue;
+      }
+      out.add(
+        BookSourceExploreEntry(
+          name: name.isEmpty ? _labelOfUrl(url) : name,
+          url: url,
+          group: group,
+        ),
+      );
+    }
+    return out;
+  }
+
+  static String _labelOfUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    return uri.query.isEmpty ? uri.path : '${uri.host}${uri.path}';
+  }
+}
+
 /// 一个书源。
 class BookSource {
   const BookSource({
@@ -120,6 +191,20 @@ class BookSource {
   /// 搜索链路里用的源标识，书籍 id 会以 `bs:` 前缀带上它。
   String get sourceTag => 'bs:$key';
 
+  /// 发现（探索）规则。
+  ///
+  /// 单独写 `ruleExplore` 的源按它走；很多源省略了它，
+  /// 但字段名和 `ruleSearch` 完全一致，所以缺的项用搜索规则兜底。
+  Map<String, String> get exploreRules {
+    final own = _rules(raw['ruleExplore']);
+    if (own.isEmpty) return searchRules;
+    return {...searchRules, ...own};
+  }
+
+  /// `exploreUrl` 解析出来的发现条目（含分组标题）。
+  List<BookSourceExploreEntry> get exploreEntries =>
+      BookSourceExploreEntry.parseList(exploreUrl);
+
   BookSource copyWith({
     String? name,
     String? group,
@@ -190,11 +275,7 @@ class BookSource {
       variables: _varsOf(json),
     );
     final probe = source._probeStatus();
-    return source.copyWith(
-      status: probe.$1,
-      statusDetail: probe.$2,
-      raw: json,
-    );
+    return source.copyWith(status: probe.$1, statusDetail: probe.$2, raw: json);
   }
 
   /// key 规则：优先按地址生成，地址为空时退化到名称。
@@ -237,7 +318,10 @@ class BookSource {
         searchUrl.trim().isNotEmpty && searchRules['bookList'] != null;
     final hasExplore = exploreUrl.trim().isNotEmpty;
     if (!hasSearch && !hasExplore) {
-      return (BookSourceStatus.incomplete, '缺少 searchUrl/bookList，也没有 exploreUrl');
+      return (
+        BookSourceStatus.incomplete,
+        '缺少 searchUrl/bookList，也没有 exploreUrl',
+      );
     }
     if (tocRules['chapterList'] == null || contentRules['content'] == null) {
       return (BookSourceStatus.incomplete, '缺少目录或正文规则');

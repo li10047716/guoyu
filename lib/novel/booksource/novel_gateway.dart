@@ -115,6 +115,26 @@ class NovelGateway {
     return engine.content(source, bookId, target.url);
   }
 
+  /// 发现：按自定义书源 `exploreUrl` 的某个条目拉一页书。
+  Future<List<Novel>> explore(
+    String sourceKey,
+    String entryUrl, {
+    int page = 1,
+  }) async {
+    final source = await _require(sourceKey);
+    return engine
+        .explore(source, entryUrl, page: page)
+        .timeout(const Duration(seconds: 25));
+  }
+
+  /// 自定义书源里带「发现」入口的（可用于发现页的源切换）。
+  Future<List<BookSource>> exploreSources() async {
+    await store.ensureLoaded();
+    return store.usableSources
+        .where((source) => source.exploreEntries.any((e) => !e.isHeader))
+        .toList(growable: false);
+  }
+
   Future<BookSource> _require(String key) async {
     await store.ensureLoaded();
     final source = store.byKey(key);

@@ -210,6 +210,50 @@ void main() {
     expect(find.text('先在搜索框上方选一个书源'), findsOneWidget);
   });
 
+  testWidgets('发现页能列出带发现规则的自定义书源', (tester) async {
+    BookSourceStore.instance.debugSetDir(null);
+    // 一个最小可用的自定义源：有 exploreUrl 就能出现在发现页的源切换里。
+    await BookSourceStore.instance.importText(
+      '[' +
+          '{"bookSourceName":"🧪测试源","bookSourceUrl":"https://example.com",'
+              '"searchUrl":"/search?q={{key}}",'
+              '"ruleSearch":{"bookList":"ul.list li","name":"@text",'
+              '"bookUrl":"a@href"},'
+              '"exploreUrl":"📊 榜单::\\n🔥 推荐榜::https://example.com?t=rank",'
+              '"ruleToc":{"chapterList":"dl dd","chapterName":"@text",'
+              '"chapterUrl":"a@href"},'
+              '"ruleContent":{"content":"#txt"}}' +
+          ']',
+    );
+    final source = BookSourceStore.instance.usableSources.single;
+
+    final repository = _NovelRepository();
+    await tester.pumpWidget(
+      MaterialApp(home: NovelHomeScreen(repository: repository)),
+    );
+    await _settle(tester);
+
+    // 窄屏走顶部胶囊，宽屏走左侧导航栏，两种 key 都认。
+    final tab = find.byKey(const ValueKey('novel-section-discover-chip'));
+    await tester.tap(
+      tab.evaluate().isNotEmpty
+          ? tab
+          : find.byKey(const ValueKey('novel-section-discover')),
+    );
+    await _settle(tester);
+
+    // 内置源 + 自定义源各一个 chip
+    expect(
+      find.byKey(const ValueKey('discover-source-native')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('discover-source-${source.key}')),
+      findsOneWidget,
+    );
+    expect(find.text('🧪测试源'), findsOneWidget);
+  });
+
   testWidgets('详情页显示目录，点「开始阅读」进阅读器', (tester) async {
     final repository = _NovelRepository();
     await tester.pumpWidget(

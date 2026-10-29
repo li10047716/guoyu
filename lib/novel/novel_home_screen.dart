@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/book_source.dart';
 import 'package:duanju_app/novel/booksource/book_source_screen.dart';
 import 'package:duanju_app/novel/booksource/book_source_store.dart';
 import 'package:duanju_app/novel/booksource/novel_gateway.dart';
@@ -1019,6 +1020,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       case _NovelSection.discover:
         return _DiscoverPage(
           repository: widget.repository,
+          gateway: _gateway,
           onOpenSearch: _openSearch,
           onOpenNovel: _openNovel,
         );
@@ -1621,14 +1623,19 @@ Widget _cover(BuildContext context, Novel novel, ColorScheme colors) {
 ///
 /// 0.7.67 起分类走站点的 `/sort/<id>_<page>/`，每类上千页真实书目，
 /// 不再是"拿关键词冒充分类"；侧栏的「收藏排行」也接上了。
+///
+/// 0.7.73 起顶部可以切到自定义书源（走它的 `exploreUrl` / `ruleExplore`），
+/// 内置源和自定义源的发现页各走一套数据。
 class _DiscoverPage extends StatefulWidget {
   const _DiscoverPage({
     required this.repository,
+    required this.gateway,
     required this.onOpenSearch,
     required this.onOpenNovel,
   });
 
   final AppRepository repository;
+  final NovelGateway gateway;
   final VoidCallback onOpenSearch;
   final ValueChanged<Novel> onOpenNovel;
 
@@ -1639,6 +1646,9 @@ class _DiscoverPage extends StatefulWidget {
 class _DiscoverPageState extends State<_DiscoverPage> {
   final _scroll = ScrollController();
 
+  /// 上次选的发现源（'' = 内置）。这个选择持久化，下次进来还是它。
+  static const String _sourcePrefKey = 'novel.discoverSource.v1';
+
   List<NovelCategory> _categories = const [];
   int? _categoryId;
   List<Novel> _ranking = const [];
@@ -1648,6 +1658,19 @@ class _DiscoverPageState extends State<_DiscoverPage> {
   bool _loading = true;
   bool _loadingMore = false;
   String? _error;
+
+  // ── 自定义书源的发现 ────────────────────────────────────────────────
+  List<BookSource> _sources = const [];
+  String _sourceKey = '';
+  List<BookSourceExploreEntry> _entries = const [];
+  String _entryUrl = '';
+  String _entryName = '';
+  List<Novel> _customBooks = const [];
+  int _customPage = 1;
+  bool _customHasMore = false;
+  bool _customLoading = false;
+  bool _customLoadingMore = false;
+  String? _customError;
 
   @override
   void initState() {
@@ -1666,11 +1689,136 @@ class _DiscoverPageState extends State<_DiscoverPage> {
   void _onScroll() {
     if (!_scroll.hasClients) return;
     if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 420) {
-      unawaited(_loadMore());
+      if (_sourceKey.isEmpty) {
+        unawaited(_loadMore());
+      } else {
+        unawaited(_loadCustomMore());
+      }
     }
   }
 
+  BookSource? get _currentSource {
+    for (final source in _sources) {
+      if (source.key == _sourceKey) return source;
+    }
+    return null;
+  }
+
   Future<void> _bootstrap() async {
+    unawaited(_loadSources());
+    await _loadNative();
+  }
+
+  Future<void> _loadSources() async {
+    try {
+      final sources = await widget.gateway.exploreSources();
+      if (!mounted) return;
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_sourcePrefKey) ?? '';
+      setState(() => _sources = sources);
+      if (saved.isNotEmpty && sources.any((s) => s.key == saved)) {
+        await _selectSource(saved);
+      }
+    } catch (error) {
+      debugPrint('发现页书源列表加载失败：$error');
+    }
+  }
+
+  /// 切发现源：'' = 内置站点，其余为自定义书源的 key。
+  Future<void> _selectSource(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_sourcePrefKey, key);
+    if (!mounted) return;
+    if (key.isEmpty) {
+      setState(() => _sourceKey = '');
+      await _loadNative();
+      return;
+    }
+    final source = _sources.firstWhere(
+      (s) => s.key == key,
+      orElse: () => const BookSource(key: '', name: '', url: ''),
+    );
+    final entries = source.key.isEmpty
+        ? const <BookSourceExploreEntry>[]
+        : source.exploreEntries;
+    if (entries.isEmpty) {
+      setState(() => _sourceKey = '');
+      return;
+    }
+    final first = entries.firstWhere(
+      (e) => !e.isHeader,
+      orElse: () => entries.first,
+    );
+    setState(() {
+      _sourceKey = key;
+      _entries = entries;
+      _entryUrl = '';
+      _entryName = '';
+      _customBooks = const [];
+      _customPage = 1;
+      _customHasMore = false;
+      _customError = null;
+    });
+    if (!first.isHeader) await _loadEntry(first.url, first.name);
+  }
+
+  /// 加载（或翻页）某个发现条目。
+  Future<void> _loadEntry(String url, String name, {bool more = false}) async {
+    if (_sourceKey.isEmpty || url.isEmpty) return;
+    setState(() {
+      _entryUrl = url;
+      _entryName = name;
+      if (more) {
+        _customLoadingMore = true;
+      } else {
+        _customLoading = true;
+        _customBooks = const [];
+        _customPage = 1;
+        _customHasMore = false;
+        _customError = null;
+      }
+    });
+    final page = more ? _customPage + 1 : 1;
+    try {
+      final items = await widget.gateway.explore(_sourceKey, url, page: page);
+      if (!mounted || _entryUrl != url) return;
+      setState(() {
+        _customBooks = more ? [..._customBooks, ...items] : items;
+        _customPage = page;
+        // 返回空页或者不足一页时就没有下一页了，避免无限翻。
+        _customHasMore = items.length >= 10;
+        _customLoading = false;
+        _customLoadingMore = false;
+      });
+    } catch (error) {
+      if (!mounted || _entryUrl != url) return;
+      setState(() {
+        _customLoading = false;
+        _customLoadingMore = false;
+        if (!more) {
+          _customError = '$error'
+              .replaceFirst('FetchFailure: ', '')
+              .replaceFirst('AppFailure: ', '');
+        }
+      });
+    }
+  }
+
+  Future<void> _loadCustomMore() async {
+    if (!_customHasMore || _customLoading || _customLoadingMore) return;
+    if (_entryUrl.isEmpty) return;
+    await _loadEntry(_entryUrl, _entryName, more: true);
+  }
+
+  Future<void> _loadNative() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _ranking = const [];
+      _books = const [];
+      _page = 1;
+      _pages = 0;
+    });
     try {
       final categories = await widget.repository.novelCategories();
       if (!mounted) return;
@@ -1758,181 +1906,384 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       controller: _scroll,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
       children: [
-        Material(
-          color: colors.surfaceContainerHighest.withValues(alpha: .5),
-          borderRadius: BorderRadius.circular(12),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            key: const ValueKey('discover-search-box'),
-            onTap: widget.onOpenSearch,
-            child: SizedBox(
-              height: 46,
-              child: Row(
-                children: [
-                  const SizedBox(width: 14),
-                  Icon(
-                    Icons.search_rounded,
-                    size: 19,
-                    color: colors.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '搜书名、作者或分类',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: colors.onSurfaceVariant.withValues(alpha: .85),
-                    ),
-                  ),
-                ],
+        _searchBox(colors),
+        if (_sources.isNotEmpty) _sourceBar(colors),
+        ...(_sourceKey.isEmpty
+            ? _nativeSections(colors)
+            : _customSections(colors)),
+      ],
+    );
+  }
+
+  Widget _searchBox(ColorScheme colors) {
+    return Material(
+      color: colors.surfaceContainerHighest.withValues(alpha: .5),
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('discover-search-box'),
+        onTap: widget.onOpenSearch,
+        child: SizedBox(
+          height: 46,
+          child: Row(
+            children: [
+              const SizedBox(width: 14),
+              Icon(
+                Icons.search_rounded,
+                size: 19,
+                color: colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '搜书名、作者或分类',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: colors.onSurfaceVariant.withValues(alpha: .85),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 顶部发现源切换：内置 + 每个带发现入口的自定义书源。
+  Widget _sourceBar(ColorScheme colors) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: SizedBox(
+        height: 32,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            _sourceChip('', '内置', colors),
+            for (final source in _sources)
+              _sourceChip(source.key, source.name, colors),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sourceChip(String key, String label, ColorScheme colors) {
+    final selected = _sourceKey == key;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Material(
+        color: selected
+            ? colors.primary.withValues(alpha: .16)
+            : colors.surfaceContainerHighest.withValues(alpha: .45),
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: ValueKey('discover-source-${key.isEmpty ? 'native' : key}'),
+          onTap: () => unawaited(_selectSource(key)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 13),
+            child: Center(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? colors.primary : colors.onSurfaceVariant,
+                ),
               ),
             ),
           ),
         ),
-        if (_categories.isNotEmpty) ...[
-          const _SectionTitle('分类'),
-          SizedBox(
-            height: 34,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: _categories.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final category = _categories[index];
-                final selected = category.id == _categoryId;
-                return Material(
-                  color: selected
-                      ? colors.primary.withValues(alpha: .16)
-                      : colors.surfaceContainerHighest.withValues(alpha: .45),
-                  borderRadius: BorderRadius.circular(17),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    key: ValueKey('discover-category-${category.id}'),
-                    onTap: () => _loadCategory(category.id),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 13),
-                      child: Center(
-                        child: Text(
-                          category.name,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: selected
-                                ? FontWeight.w700
-                                : FontWeight.w500,
-                            color: selected
-                                ? colors.primary
-                                : colors.onSurfaceVariant,
-                          ),
+      ),
+    );
+  }
+
+  // ── 内置源：分类 + 收藏排行 + 书籍 ────────────────────────────────────
+  List<Widget> _nativeSections(ColorScheme colors) {
+    return [
+      if (_categories.isNotEmpty) ...[
+        const _SectionTitle('分类'),
+        SizedBox(
+          height: 34,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: _categories.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) {
+              final category = _categories[index];
+              final selected = category.id == _categoryId;
+              return Material(
+                color: selected
+                    ? colors.primary.withValues(alpha: .16)
+                    : colors.surfaceContainerHighest.withValues(alpha: .45),
+                borderRadius: BorderRadius.circular(17),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  key: ValueKey('discover-category-${category.id}'),
+                  onTap: () => _loadCategory(category.id),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 13),
+                    child: Center(
+                      child: Text(
+                        category.name,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: selected
+                              ? colors.primary
+                              : colors.onSurfaceVariant,
                         ),
                       ),
                     ),
                   ),
-                );
-              },
-            ),
-          ),
-        ],
-        if (_loading)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 48),
-            child: Center(child: CircularProgressIndicator()),
-          )
-        else if (_error != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 40),
-            child: Column(
-              children: [
-                Text(
-                  _error!,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
-                const SizedBox(height: 14),
-                OutlinedButton(
-                  onPressed: () => _bootstrap(),
-                  child: const Text('重试'),
-                ),
-              ],
-            ),
-          )
-        else ...[
-          if (_ranking.isNotEmpty) ...[
-            const _SectionTitle('收藏排行'),
-            for (var i = 0; i < _ranking.length && i < 10; i++)
-              _RankRow(
-                index: i,
-                novel: _ranking[i],
-                onTap: () => widget.onOpenNovel(_ranking[i]),
-              ),
-          ],
-          const _SectionTitle('更多书籍'),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 132,
-              mainAxisSpacing: 14,
-              crossAxisSpacing: 12,
-              childAspectRatio: .52,
-            ),
-            itemCount: _books.length,
-            itemBuilder: (context, index) {
-              final novel = _books[index];
-              return InkWell(
-                key: ValueKey('discover-book-$index'),
-                onTap: () => widget.onOpenNovel(novel),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: _cover(context, novel, colors),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      novel.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
                 ),
               );
             },
           ),
-          if (_loadingMore)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
-              child: Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+        ),
+      ],
+      if (_loading)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 48),
+          child: Center(child: CircularProgressIndicator()),
+        )
+      else if (_error != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Column(
+            children: [
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: colors.onSurfaceVariant),
               ),
-            )
-          else if (_pages > 0 && _page >= _pages)
-            Padding(
-              padding: const EdgeInsets.only(top: 14),
-              child: Center(
-                child: Text(
-                  '已经到底了 · 共 $_pages 页',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: colors.onSurfaceVariant.withValues(alpha: .7),
+              const SizedBox(height: 14),
+              OutlinedButton(
+                onPressed: () => unawaited(_loadNative()),
+                child: const Text('重试'),
+              ),
+            ],
+          ),
+        )
+      else ...[
+        if (_ranking.isNotEmpty) ...[
+          const _SectionTitle('收藏排行'),
+          for (var i = 0; i < _ranking.length && i < 10; i++)
+            _RankRow(
+              index: i,
+              novel: _ranking[i],
+              onTap: () => widget.onOpenNovel(_ranking[i]),
+            ),
+        ],
+        const _SectionTitle('更多书籍'),
+        _bookGrid(_books, colors, keyPrefix: 'discover-book'),
+        if (_loadingMore)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          )
+        else if (_pages > 0 && _page >= _pages)
+          _endNote('已经到底了 · 共 $_pages 页', colors),
+      ],
+    ];
+  }
+
+  // ── 自定义书源：它自己的发现分类 + 书单 ──────────────────────────────
+  List<Widget> _customSections(ColorScheme colors) {
+    final source = _currentSource;
+    final out = <Widget>[
+      _SectionTitle(source == null ? '发现' : '${source.name} · 发现'),
+    ];
+
+    if (_entries.isEmpty) {
+      out.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Text(
+            '这个书源没有配置发现分类，用搜索找书吧',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.onSurfaceVariant),
+          ),
+        ),
+      );
+      return out;
+    }
+
+    // 分组标题 + 该组的条目按钮
+    var chips = <Widget>[];
+    void flushChips() {
+      if (chips.isEmpty) return;
+      out.add(Wrap(spacing: 8, runSpacing: 8, children: List.of(chips)));
+      chips = <Widget>[];
+    }
+
+    for (final entry in _entries) {
+      if (entry.isHeader) {
+        flushChips();
+        out.add(_SectionTitle(entry.name));
+        continue;
+      }
+      chips.add(_entryChip(entry, colors));
+    }
+    flushChips();
+
+    if (_customLoading) {
+      out.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 48),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    } else if (_customError != null) {
+      out.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Column(
+            children: [
+              Text(
+                _customError!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: colors.onSurfaceVariant),
+              ),
+              const SizedBox(height: 14),
+              OutlinedButton(
+                onPressed: () => unawaited(_loadEntry(_entryUrl, _entryName)),
+                child: const Text('重试'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_customBooks.isEmpty) {
+      out.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Text(
+            '这个分类暂时没有书，换个分类试试',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.onSurfaceVariant),
+          ),
+        ),
+      );
+    } else {
+      if (_entryName.isNotEmpty) out.add(_SectionTitle(_entryName));
+      out.add(
+        _bookGrid(_customBooks, colors, keyPrefix: 'discover-custom-book'),
+      );
+      if (_customLoadingMore) {
+        out.add(
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
+        );
+      } else if (!_customHasMore) {
+        out.add(_endNote('没有更多了', colors));
+      }
+    }
+    return out;
+  }
+
+  Widget _entryChip(BookSourceExploreEntry entry, ColorScheme colors) {
+    final selected = _entryUrl == entry.url;
+    return Material(
+      color: selected
+          ? colors.primary.withValues(alpha: .16)
+          : colors.surfaceContainerHighest.withValues(alpha: .45),
+      borderRadius: BorderRadius.circular(17),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: ValueKey('discover-entry-${entry.url}'),
+        onTap: () => unawaited(_loadEntry(entry.url, entry.name)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+          child: Text(
+            entry.name,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected ? colors.primary : colors.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bookGrid(
+    List<Novel> books,
+    ColorScheme colors, {
+    required String keyPrefix,
+  }) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 132,
+        mainAxisSpacing: 14,
+        crossAxisSpacing: 12,
+        childAspectRatio: .52,
+      ),
+      itemCount: books.length,
+      itemBuilder: (context, index) {
+        final novel = books[index];
+        return InkWell(
+          key: ValueKey('$keyPrefix-$index'),
+          onTap: () => widget.onOpenNovel(novel),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: _cover(context, novel, colors),
                   ),
                 ),
               ),
-            ),
-        ],
-      ],
+              const SizedBox(height: 6),
+              Text(
+                novel.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _endNote(String text, ColorScheme colors) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Center(
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 11.5,
+            color: colors.onSurfaceVariant.withValues(alpha: .7),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -104,25 +104,92 @@ class BookSourceEngine {
       key: query,
       page: page,
     );
+    return _novelsFromItems(
+      items,
+      source.searchRules,
+      source,
+      pageUrl: result.url,
+      key: query,
+      page: page,
+    );
+  }
+
+  /// 发现页：按 `exploreUrl` 里的某个条目拉一页书。
+  ///
+  /// 页面地址可能带 `{{page}}`；不带的话分页靠脚本里的 `page` 变量
+  /// （番茄源那种纯脚本实现就是这样翻页的）。
+  Future<List<Novel>> explore(
+    BookSource source,
+    String entryUrl, {
+    int page = 1,
+  }) async {
+    final address0 = entryUrl.trim();
+    if (address0.isEmpty) {
+      throw FetchFailure('没有选择发现分类');
+    }
+    final rules = source.exploreRules;
+    final listRule = rules['bookList'];
+    if (listRule == null || listRule.trim().isEmpty) {
+      throw FetchFailure('这个源没有配置发现列表规则');
+    }
+
+    var address = _expand(address0, {'page': '$page'}, charset: source.charset);
+    address = RuleEngine.resolveUrl(source.url, address);
+
+    // 纯脚本列表规则（`@js:` 整条）自己发请求，不用先抓页面，
+    // 否则像番茄源这种会白抓一次网页。
+    final scriptOnly = _isScriptOnly(listRule);
+    var body = '';
+    var pageUrl = address;
+    if (!scriptOnly) {
+      final result = await BookSourceHttp.fetch(
+        address,
+        headers: _headers(source),
+        charset: source.charset,
+      );
+      if (!result.ok) {
+        throw FetchFailure(
+          '发现页打开失败（HTTP ${result.status}）',
+          status: result.status,
+        );
+      }
+      body = result.body;
+      pageUrl = result.url;
+    }
+
+    final ctx = RuleContext(body: body, url: pageUrl, vars: {'page': '$page'});
+    final items = await _listItems(listRule, ctx, source, page: page);
+    return _novelsFromItems(items, rules, source, pageUrl: pageUrl, page: page);
+  }
+
+  /// 探索/搜索共用的「列表项 → Novel」映射。
+  Future<List<Novel>> _novelsFromItems(
+    List<RuleContext> items,
+    Map<String, String> rules,
+    BookSource source, {
+    required String pageUrl,
+    String key = '',
+    int page = 1,
+  }) async {
     final out = <Novel>[];
     final seen = <String>{};
     for (final item in items) {
       final name = await BookSourceRules.one(
-        source.searchRules['name'],
+        rules['name'],
         item,
         source: source,
         fallbackRule: '@text',
-        key: query,
+        key: key,
         page: page,
       );
       final bookUrl = RuleEngine.resolveUrl(
-        result.url,
+        pageUrl,
         await BookSourceRules.one(
-          source.searchRules['bookUrl'],
+          rules['bookUrl'],
           item,
           source: source,
           fallbackRule: '@href',
-          key: query,
+          key: key,
           page: page,
         ),
       );
@@ -134,41 +201,41 @@ class BookSourceEngine {
           source: source.sourceTag,
           title: name,
           author: await BookSourceRules.one(
-            source.searchRules['author'],
+            rules['author'],
             item,
             source: source,
-            key: query,
+            key: key,
             page: page,
           ),
           category: await BookSourceRules.one(
-            source.searchRules['kind'],
+            rules['kind'],
             item,
             source: source,
-            key: query,
+            key: key,
             page: page,
           ),
           description: await BookSourceRules.one(
-            source.searchRules['intro'],
+            rules['intro'],
             item,
             source: source,
-            key: query,
+            key: key,
             page: page,
           ),
           cover: RuleEngine.resolveUrl(
-            result.url,
+            pageUrl,
             await BookSourceRules.one(
-              source.searchRules['coverUrl'],
+              rules['coverUrl'],
               item,
               source: source,
-              key: query,
+              key: key,
               page: page,
             ),
           ),
           latest: await BookSourceRules.one(
-            source.searchRules['lastChapter'],
+            rules['lastChapter'],
             item,
             source: source,
-            key: query,
+            key: key,
             page: page,
           ),
         ),
@@ -177,19 +244,33 @@ class BookSourceEngine {
     return out;
   }
 
+  /// 整条规则就是一段脚本（没有前置 CSS/JSONPath）。
+  static bool _isScriptOnly(String rule) {
+    final split = BookSourceRules.splitJs(rule);
+    return split != null && split.prefix.trim().isEmpty;
+  }
+
   /// 详情（含完整目录）。
+  ///
+  /// 支持 Legado 的 `ruleBookInfo.init`：它是「详情上下文初始化」规则，
+  /// 返回值（通常是接口 JSON）会成为后续所有详情字段规则的求值对象。
+  /// 番茄源这类不抓网页、直接用 API 的源全靠它，缺了它书名/封面/简介全是空。
   Future<NovelBook> detail(BookSource source, String bookUrl) async {
-    final detailResult = await BookSourceHttp.fetch(
-      bookUrl,
-      headers: _headers(source),
-      charset: source.charset,
-    );
-    if (!detailResult.ok) {
-      throw FetchFailure('详情页打开失败（HTTP ${detailResult.status}）',
-          status: detailResult.status);
-    }
-    final ctx = RuleContext(body: detailResult.body, url: detailResult.url);
     final rules = source.bookInfoRules;
+    final initRule = (rules['init'] ?? '').trim();
+
+    RuleContext ctx;
+    if (initRule.isEmpty) {
+      ctx = await _pageContext(source, bookUrl);
+    } else {
+      // 先按「init 自己就能拿到数据」跑一遍，免得白抓一次详情页。
+      final seed = RuleContext(body: '', url: bookUrl);
+      final value = await BookSourceRules.one(initRule, seed, source: source);
+      ctx = value.trim().isEmpty
+          ? await _pageContext(source, bookUrl, initRule: initRule)
+          : RuleContext(body: value, url: bookUrl);
+    }
+    final pageUrl = ctx.url;
 
     final name = await BookSourceRules.one(
       rules['name'],
@@ -197,35 +278,79 @@ class BookSourceEngine {
       source: source,
       fallbackRule: '@text',
     );
-    final author = await BookSourceRules.one(rules['author'], ctx, source: source);
+    final author = await BookSourceRules.one(
+      rules['author'],
+      ctx,
+      source: source,
+    );
     final kind = await BookSourceRules.one(rules['kind'], ctx, source: source);
-    final intro = await BookSourceRules.one(rules['intro'], ctx, source: source);
-    final cover = await BookSourceRules.one(rules['coverUrl'], ctx, source: source);
-    final latest = await BookSourceRules.one(rules['lastChapter'], ctx, source: source);
+    final intro = await BookSourceRules.one(
+      rules['intro'],
+      ctx,
+      source: source,
+    );
+    final cover = await BookSourceRules.one(
+      rules['coverUrl'],
+      ctx,
+      source: source,
+    );
+    final latest = await BookSourceRules.one(
+      rules['lastChapter'],
+      ctx,
+      source: source,
+    );
 
-    var tocUrl = await BookSourceRules.one(rules['tocUrl'], ctx, source: source);
+    var tocUrl = await BookSourceRules.one(
+      rules['tocUrl'],
+      ctx,
+      source: source,
+    );
     if (tocUrl.isEmpty) {
-      tocUrl = detailResult.url;
+      tocUrl = pageUrl;
     } else {
-      tocUrl = RuleEngine.resolveUrl(detailResult.url, tocUrl);
+      tocUrl = RuleEngine.resolveUrl(pageUrl, tocUrl);
     }
 
     final chapters = await this.chapters(source, tocUrl);
 
     return NovelBook(
       novel: Novel(
-        id: BookSourceIds.encode(source.key, detailResult.url),
+        id: BookSourceIds.encode(source.key, pageUrl),
         source: source.sourceTag,
         title: name.isEmpty ? _hostOf(bookUrl) : name,
         author: author,
         category: kind,
         description: intro,
-        cover: RuleEngine.resolveUrl(detailResult.url, cover),
+        cover: RuleEngine.resolveUrl(pageUrl, cover),
         latest: latest,
         chapters: chapters.length,
       ),
       chapters: chapters,
     );
+  }
+
+  /// 抓详情页并建上下文；给了 [initRule] 时再在页面上跑一遍它。
+  Future<RuleContext> _pageContext(
+    BookSource source,
+    String url, {
+    String initRule = '',
+  }) async {
+    final result = await BookSourceHttp.fetch(
+      url,
+      headers: _headers(source),
+      charset: source.charset,
+    );
+    if (!result.ok) {
+      throw FetchFailure(
+        '详情页打开失败（HTTP ${result.status}）',
+        status: result.status,
+      );
+    }
+    final page = RuleContext(body: result.body, url: result.url);
+    if (initRule.trim().isEmpty) return page;
+    final value = await BookSourceRules.one(initRule, page, source: source);
+    if (value.trim().isEmpty) return page;
+    return RuleContext(body: value, url: result.url);
   }
 
   /// 目录。
@@ -244,8 +369,10 @@ class BookSourceEngine {
       charset: source.charset,
     );
     if (!result.ok) {
-      throw FetchFailure('目录打开失败（HTTP ${result.status}）',
-          status: result.status);
+      throw FetchFailure(
+        '目录打开失败（HTTP ${result.status}）',
+        status: result.status,
+      );
     }
 
     final ctx = RuleContext(body: result.body, url: result.url);
@@ -302,8 +429,10 @@ class BookSourceEngine {
         charset: source.charset,
       );
       if (!result.ok) {
-        throw FetchFailure('正文打开失败（HTTP ${result.status}）',
-            status: result.status);
+        throw FetchFailure(
+          '正文打开失败（HTTP ${result.status}）',
+          status: result.status,
+        );
       }
       final ctx = RuleContext(body: result.body, url: result.url);
       if (page == 0) {
@@ -374,18 +503,16 @@ class BookSourceEngine {
           }
         } else if (row != null) {
           out.add(
-            RuleContext(
-              body: jsonEncode(row),
-              url: ctx.url,
-              vars: ctx.vars,
-            ),
+            RuleContext(body: jsonEncode(row), url: ctx.url, vars: ctx.vars),
           );
         }
       }
       return out;
     }
     if (decoded is Map) {
-      return [RuleContext(body: jsonEncode(decoded), url: ctx.url, vars: ctx.vars)];
+      return [
+        RuleContext(body: jsonEncode(decoded), url: ctx.url, vars: ctx.vars),
+      ];
     }
 
     // 返回的是 HTML：当作新页面，让后续规则在上面选
@@ -522,8 +649,7 @@ class BookSourceEngine {
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
         return {
-          for (final entry in decoded.entries)
-            '${entry.key}': '${entry.value}',
+          for (final entry in decoded.entries) '${entry.key}': '${entry.value}',
         };
       }
     } catch (_) {

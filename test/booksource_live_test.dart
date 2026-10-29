@@ -77,6 +77,52 @@ void main() {
   );
 
   test(
+    '发现页：exploreUrl 的条目能拉出书单',
+    () async {
+      if (!File(single).existsSync()) return;
+      final parsed = parseBookSources(
+        File(single).readAsStringSync(),
+        existing: const [],
+      );
+      final source = parsed.parsed.first;
+      final entries = source.exploreEntries.where((e) => !e.isHeader).toList();
+      expect(entries, isNotEmpty, reason: '这个源没有 exploreUrl');
+
+      const engine = BookSourceEngine();
+      final first = entries.first;
+      final books = await engine.explore(source, first.url);
+      // ignore: avoid_print
+      print(
+        '  发现「${first.name}」：${books.length} 本'
+        '（${books.take(5).map((b) => b.title).join('、')}）',
+      );
+      expect(books, isNotEmpty);
+
+      // 拉出来的书要能接着打开目录读正文。
+      final book = await engine.detail(
+        source,
+        BookSourceIds.decode(books.first.id)!.url,
+      );
+      expect(book.chapters, isNotEmpty);
+      final text = await engine.content(
+        source,
+        book.novel.id,
+        BookSourceIds.decode(book.chapters.first.id)!.url,
+      );
+      expect(text.paragraphs, isNotEmpty);
+      // ignore: avoid_print
+      print(
+        '  首本《${book.novel.title}》→ ${book.chapters.length} 章'
+        ' → ${text.paragraphs.length} 段',
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 5)),
+    skip: live && single.isNotEmpty
+        ? false
+        : '需要 LEGADO_LIVE=1 与 LEGADO_SOURCE',
+  );
+
+  test(
     '整个目录的书源逐个实测',
     () async {
       final files =
