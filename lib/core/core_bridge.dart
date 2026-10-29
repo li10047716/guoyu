@@ -25,9 +25,46 @@ typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _NativeFree = Void Function(Pointer<Utf8>);
 typedef _DartFree = void Function(Pointer<Utf8>);
 
+/// 执行一段书源脚本（0.7.69）。
+///
+/// 走原生核心里的 goja 运行时，`java.*` / `source` / `cookie` 都由 Go 侧提供。
+/// 返回结构：`{value, variables}`；脚本出错会抛 [AppFailure]。
+Future<Map<String, dynamic>> evalLegadoScript(
+  Map<String, dynamic> payload,
+) async {
+  final body = jsonEncode({'action': 'legadoJs', 'legado': payload});
+  final encoded = await Isolate.run(
+    () => _nativeRequest(body),
+  ).timeout(const Duration(seconds: 45));
+  final decoded = jsonDecode(encoded);
+  if (decoded is! Map) throw AppFailure('书源脚本返回格式异常');
+  if (decoded['ok'] != true) {
+    throw AppFailure(decoded['error'] as String? ?? '书源脚本执行失败');
+  }
+  final data = decoded['data'];
+  return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
+}
+
+/// 清掉某个书源的 cookie（删除书源时调用）。
+Future<void> resetLegadoCookies(String sourceKey) async {
+  final body = jsonEncode({
+    'action': 'resetLegadoCookies',
+    'source': sourceKey,
+  });
+  try {
+    await Isolate.run(() => _nativeRequest(body));
+  } catch (_) {
+    // cookie 清不掉不影响主流程
+  }
+}
+
 String _nativeRequest(String body) {
   final DynamicLibrary library;
-  if (Platform.isAndroid) {
+  // 桌面端调试/命令行工具可以指定 dll 路径（dart run 时 exe 目录里没有核心）
+  final override = Platform.environment['DUANJU_CORE_DLL'];
+  if (override != null && override.isNotEmpty) {
+    library = DynamicLibrary.open(override);
+  } else if (Platform.isAndroid) {
     library = DynamicLibrary.open('libduanju_core.so');
   } else if (Platform.isWindows) {
     library = DynamicLibrary.open(

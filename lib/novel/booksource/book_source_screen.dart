@@ -130,8 +130,9 @@ class _BookSourceScreenState extends State<BookSourceScreen> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              '支持「阅读 / Legado」格式书源。规则里用到 JavaScript 或 XPath 的源会标成不可用'
-              '（本地引擎跑不了），纯规则源导入后即可搜索阅读。',
+              '支持「阅读 / Legado」格式书源，带 @js: 规则的源也能跑（本地内置 JS 引擎，'
+              'java.ajax 等接口已实现）。只有用到 XPath、或脚本里直接 new Java 类'
+              '（Packages.java.*）的源才会标成不可用。',
               style: TextStyle(
                 fontSize: 12.5,
                 height: 1.5,
@@ -227,7 +228,7 @@ class _BookSourceScreenState extends State<BookSourceScreen> {
                       color: colors.onSurfaceVariant,
                     ),
                   ),
-                  if (!usable && source.statusDetail.isNotEmpty) ...[
+                  if (source.statusDetail.isNotEmpty) ...[
                     const SizedBox(height: 6),
                     Text(
                       source.statusDetail,
@@ -236,7 +237,9 @@ class _BookSourceScreenState extends State<BookSourceScreen> {
                       style: TextStyle(
                         fontSize: 11,
                         height: 1.4,
-                        color: statusColor.withValues(alpha: 0.9),
+                        color: usable
+                            ? colors.onSurfaceVariant
+                            : statusColor.withValues(alpha: 0.9),
                       ),
                     ),
                   ],

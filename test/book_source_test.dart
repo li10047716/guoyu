@@ -70,16 +70,25 @@ void main() {
       expect(extractSourceUrl('[{"a":1}]'), isNull);
     });
 
-    test('用到 @js 的源被标记为不可用', () {
+    test('用到 @js 的源交给原生 JS 运行时，仍然可用', () {
       final jsSource = _readySource()
         ..['bookSourceName'] = '番茄'
         ..['ruleSearch'] = {
           'bookList': '@js:(function(){ return result; })()',
         };
       final source = BookSource.fromLegado(jsSource);
-      expect(source.status, BookSourceStatus.needsJs);
+      expect(source.status.usable, isTrue);
+    });
+
+    test('直接实例化 Java 类的源被标记为需要 Java', () {
+      final javaSource = _readySource()
+        ..['bookSourceName'] = '番茄'
+        ..['jsLib'] =
+            'var d = Packages.java.security.MessageDigest.getInstance("MD5");';
+      final source = BookSource.fromLegado(javaSource);
+      expect(source.status, BookSourceStatus.needsJava);
       expect(source.status.usable, isFalse);
-      expect(source.statusDetail, contains('@js:'));
+      expect(source.statusDetail, contains('Java'));
     });
 
     test('缺目录/正文规则时标记为规则不全', () {
@@ -89,13 +98,13 @@ void main() {
     });
 
     test('导入结果会汇总不可用原因', () {
-      final js = _readySource()
-        ..['bookSourceUrl'] = 'https://js.example.com'
-        ..['ruleToc'] = {'chapterList': '@js:foo()'};
-      final result = parseBookSources(jsonEncode([js]));
+      final xpath = _readySource()
+        ..['bookSourceUrl'] = 'https://xpath.example.com'
+        ..['ruleToc'] = {'chapterList': '@xpath://div[@class="item"]'};
+      final result = parseBookSources(jsonEncode([xpath]));
       expect(result.parsed, hasLength(1));
       expect(result.blockedCount, 1);
-      expect(result.warnings.join(), contains('需要 JS'));
+      expect(result.warnings.join(), contains('需要 XPath'));
     });
   });
 

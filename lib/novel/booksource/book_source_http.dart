@@ -58,6 +58,9 @@ class BookSourceHttp {
   /// GET / POST 抓取。
   ///
   /// [charset] 传 `gbk` / `gb2312` 时按 GBK 解码，否则先试 UTF-8。
+  ///
+  /// 重定向自己跟：Dart 只对 GET/HEAD 自动跟随，书源的搜索多是 POST，
+  /// 站点一个 301 跳到补斜杠的地址就会把请求晾在那里。
   static Future<FetchResult> fetch(
     String url, {
     String method = 'GET',
@@ -66,13 +69,55 @@ class BookSourceHttp {
     String charset = '',
     Duration timeout = const Duration(seconds: 20),
   }) async {
+    var currentUrl = url;
+    var currentMethod = method.toUpperCase();
+    var currentBody = body;
+
+    for (var hop = 0; hop <= 6; hop++) {
+      final sent = await _send(
+        currentUrl,
+        currentMethod,
+        currentBody,
+        headers,
+        charset,
+        timeout,
+      );
+      final status = sent.result.status;
+      final location = sent.location;
+      if (location == null || location.isEmpty || hop == 6) return sent.result;
+      if (status < 300 || status >= 400) return sent.result;
+
+      // 303 一律转 GET；301/302 对 POST 也按浏览器的习惯转 GET
+      if (status == 303 ||
+          ((status == 301 || status == 302) &&
+              currentMethod != 'GET' &&
+              currentMethod != 'HEAD')) {
+        currentMethod = 'GET';
+        currentBody = null;
+      }
+      try {
+        currentUrl = Uri.parse(currentUrl).resolve(location).toString();
+      } catch (_) {
+        return sent.result;
+      }
+    }
+    throw FetchFailure('重定向次数过多：$url');
+  }
+
+  static Future<({FetchResult result, String? location})> _send(
+    String url,
+    String method,
+    String? body,
+    Map<String, String> headers,
+    String charset,
+    Duration timeout,
+  ) async {
     final client = HttpClient()
       ..connectionTimeout = timeout
       ..userAgent = headers['User-Agent'] ?? defaultUserAgent;
     try {
-      final request = await client.openUrl(method.toUpperCase(), Uri.parse(url));
-      request.followRedirects = true;
-      request.maxRedirects = 5;
+      final request = await client.openUrl(method, Uri.parse(url));
+      request.followRedirects = false;
       _defaultHeaders.forEach((k, v) {
         if (!headers.keys.any((h) => h.toLowerCase() == k.toLowerCase())) {
           request.headers.set(k, v);
@@ -80,9 +125,17 @@ class BookSourceHttp {
       });
       headers.forEach((k, v) {
         if (k.toLowerCase() == 'user-agent') return;
-        request.headers.set(k, v);
+        // HttpClient 只收 Latin-1 头值；书源里常写中文占位（如「其他你抓到的Cookie」），
+        // 直接 set 会抛 FormatException，这里先洗一遍。
+        final safe = _sanitizeHeader(v);
+        if (safe == null) return;
+        try {
+          request.headers.set(k, safe);
+        } catch (_) {
+          // 头名本身不合法就跳过
+        }
       });
-      if ((method.toUpperCase() == 'POST') && body != null) {
+      if (method == 'POST' && body != null) {
         final bytes = _encode(body, charset);
         request.headers.contentLength = bytes.length;
         request.headers.contentType = ContentType(
@@ -103,12 +156,13 @@ class BookSourceHttp {
       final bytes = buffer.takeBytes();
       final contentType = response.headers.contentType?.charset ?? '';
       final effective = charset.isNotEmpty ? charset : contentType;
-      return FetchResult(
-        body: _decode(bytes, effective),
-        url: response.redirects.isEmpty
-            ? url
-            : response.redirects.last.location.toString(),
-        status: response.statusCode,
+      return (
+        result: FetchResult(
+          body: _decode(bytes, effective),
+          url: url,
+          status: response.statusCode,
+        ),
+        location: response.headers.value(HttpHeaders.locationHeader),
       );
     } on FetchFailure {
       rethrow;
@@ -123,8 +177,14 @@ class BookSourceHttp {
     }
   }
 
-  static bool _isGbk(String charset) {
-    final c = charset.toLowerCase();
+  /// 头值只保留 Latin-1 可见字符；洗空了就返回 null 表示跳过。
+  static String? _sanitizeHeader(String value) {
+    if (value.isEmpty) return null;
+    final cleaned = value.replaceAll(RegExp(r'[^\t\x20-\x7E\x80-\xFF]'), '');
+    return cleaned.trim().isEmpty ? null : cleaned;
+  }
+
+  static bool _isGbk(String charset) {    final c = charset.toLowerCase();
     return c.contains('gbk') || c.contains('gb2312') || c.contains('gb18030');
   }
 

@@ -65,6 +65,10 @@ class RuleContext {
 
   dom.Element get root => _root ?? document.documentElement!;
 
+  /// 当前上下文的原文：元素上下文是它的 outerHTML，页面上下文是整页正文。
+  /// Legado 里脚本的 `result` 默认就是这个。
+  String get currentText => _root?.outerHtml ?? body;
+
   dom.Document get document => _document ??= html_parser.parse(body);
 
   /// 正文能当 JSON 用时返回解析结果，否则返回 null。

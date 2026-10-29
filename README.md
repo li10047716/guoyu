@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.68+128** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.69+129** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,26 +14,45 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.68）
+## 二、本次更新（0.7.69）
 
-新增**自定义书源**：把「阅读 / Legado」格式的书源 JSON 导进来，直接用它搜书、看正文。
+给自定义书源补上**JS 引擎**：Legado 生态里绝大多数的 `@js:` 规则现在都能跑了。
+
+- **内置 JS 运行时**：用纯 Go 的 goja 跑书源脚本，放在原生核心里，
+  Windows / Android / iOS 三端共用一份实现，不额外引入解释器进程。
+- **同步的 `java.*` 接口**：`java.ajax` / `get` / `post` 直接返回响应正文（Legado 的语义就是同步的），
+  另外实现了 `base64Encode/Decode`、`md5Encode(16)`、`put`/`get`、`getCookie`/`setCookie`/`removeCookie`、
+  `timeFormat`、`encodeURI`，以及 `source.getVariable`/`setVariable`（变量会随书源一起存盘）。
+- **规则链语义对齐**：`规则@js:代码` 里的 `result` 是前置规则的取值；
+  单写 `@js:` 时 `result` 是当前页正文（元素级规则则是该元素的 outerHTML）——
+  书源里常见的 `JSON.parse(result)`、`result.match(...)` 都能直接工作。
+- **列表规则支持 JS**：`bookList` / `chapterList` 是脚本时，返回的 JSON 数组会拆成逐项上下文，
+  后面接着用 `$.name` 这类 JSONPath 取字段；返回 HTML 片段则当作页面继续解析。
+- **状态判定更准**：`@js:` 不再等于不可用；只有用 XPath、或脚本里直接
+  `new Packages.java.*`（要真 JVM 类库，比如番茄源的签名体系）才标「需要 Java」。
+- **修掉三个会让源直接不可用的 bug**：搜索地址写成相对路径时没拼主域名、
+  书源 header 里出现中文字符导致请求崩溃并被误报成「地址不合法」、
+  可选字段用到 JS 时整个源被判死（现在只会跳过该字段）。
+  另外重定向改成自己跟，POST 遇到 301/302 也能落到正确页面。
+- 调试工具：`flutter test test/booksource_live_test.dart`（配 `LEGADO_LIVE=1`、`LEGADO_SOURCE`、
+  `DUANJU_CORE_DLL`）会真去搜一本书、开目录、抓一章正文，用来验证整条链路。
+
+实测：源仓库抽 29 个近期书源，28 个含 JS，其中 19 个是不依赖 Java 类的纯 JS 源，
+这类现在能跑；「神文小说」「52 书库」等源搜索 → 详情 → 目录 → 正文全链路已跑通。
+
+### 书源功能（0.7.68）
 
 - **书源管理**（小说 → 右上「更多」→ 书源管理…）：列出名称、地址、分组与可用状态，
   可单独启用/停用、查看规则明细、删除。
 - **四种导入方式**：本地 `.json` / `.txt` 文件、书源 JSON 直链、剪贴板，
-  以及 `yuedu://booksource/importonline?src=…` 这类一键导入链接（扫码后把链接复制过来即可）。
+  以及 `yuedu://booksource/importonline?src=…` 这类一键导入链接。
   按 `bookSourceUrl` 去重，同源重复导入不会出现两份。
-- **本地规则引擎**：CSS 选择器（`class.x` / `tag.a` / `id.x` / 属性选择器 / `!n` 索引）、
-  JSONPath（`$.data.list[*].name`、`$..name`）、`&&` 接续、`||` 兜底、`##正则##替换`、
-  `{{key}}` / `{{page}}` 变量，以及 `{{(page - 1) * 10}}` 这类算术。
-  正文会把 `<br>` 转成段落，并过滤「一秒记住 / 无弹窗 / 网址」之类的广告行。
-- **不支持的情况会明说**：规则里用到 `@js:`、`<js>`、`java.*` 或 `@xpath:` 的源，
-  导入时标成「需要 JS」并给出命中的规则片段，不静默失败。
-  番茄小说这类 APP 接口源属于这一类——它依赖整套 Java 类模拟与签名体系，
-  当前版本只能跑纯网站规则源。
+- **本地规则引擎**：CSS 选择器、JSONPath、`&&` 接续、`||` 兜底、`##正则##替换`、
+  `{{key}}` / `{{page}}` 变量与 `{{(page - 1) * 10}}` 算术。
+  正文会把 `<br>` 转成段落，并过滤广告行。
 - **GBK 站点**：书源声明 `charset` 为 gbk/gb2312 时按 GBK 解码，POST 搜索词也按目标站编码。
-- 附带一个调试工具：`dart run tool/booksource_probe.dart <书源.json> <关键词>`，
-  依次打印搜索 / 详情 / 目录 / 正文的结果，方便排查规则。
+- 调试工具：`flutter test test/booksource_live_test.dart`（需 `LEGADO_LIVE=1`、`LEGADO_SOURCE`、`DUANJU_CORE_DLL`）
+  会对指定书源真跑一遍「搜索 → 详情 → 目录 → 正文」。
 
 ## 三、往期更新
 
@@ -608,6 +627,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
+| 0.7.69 | 2026-10-29 | 小说：书源内置 JS 引擎（goja，三端共用）——`@js:` 规则、同步 `java.ajax/post`、base64/md5/cookie/变量、列表规则返回 JSON 数组、`result` 语义对齐；修相对 searchUrl、中文 header 崩溃、可选 JS 字段误判、POST 重定向 |
 | 0.7.50 | 2026-10-28 | 新增站源奈飞工厂（电影 / 连续剧 / 漫剧 / 综艺 / 纪录片五档全接入，列表走 JSON 接口，多线路自动兜底，直链 m3u8） |
 | 0.7.51 | 2026-10-28 | 奈飞工厂搜索改走结果页，可翻页到全量（原来联想接口硬上限 20 条且不分页） |
 | 0.7.52 | 2026-10-28 | 开屏页改为动态画面（星野/月晕/海浪/碎光，单个 CustomPainter 绘制） |

@@ -133,6 +133,28 @@ class BookSourceStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 合并脚本写下的变量（`java.put` / `source.setVariable`）。
+  ///
+  /// 不触发 notifyListeners：变量变化不影响列表展示，避免搜索时频繁重建界面。
+  Future<void> mergeVariables(String key, Map<String, String> vars) async {
+    if (vars.isEmpty) return;
+    final index = _sources.indexWhere((s) => s.key == key);
+    if (index < 0) return;
+    final merged = {..._sources[index].variables, ...vars};
+    if (merged.length == _sources[index].variables.length) {
+      var same = true;
+      for (final entry in vars.entries) {
+        if (_sources[index].variables[entry.key] != entry.value) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    _sources[index] = _sources[index].copyWith(variables: merged);
+    await _save();
+  }
+
   Future<void> setEnabled(String key, bool enabled) async {
     final index = _sources.indexWhere((s) => s.key == key);
     if (index < 0) return;

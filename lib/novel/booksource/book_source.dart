@@ -16,8 +16,15 @@ enum BookSourceStatus {
   /// 规则只用了 CSS / JSONPath / 正则，本地引擎能跑。
   ready,
 
-  /// 规则里有 `@js:` / `<js>` / `java.`，需要 JS 引擎。
+  /// 规则里有 `@js:` / `<js>`，需要 JS 引擎。
+  ///
+  /// 0.7.69 起由原生核心的 goja 运行时处理，不再算不可用；
+  /// 保留枚举是为了兼容旧存档里写下的 _status。
   needsJs,
+
+  /// 规则里直接实例化了 Java 类（`Packages.java.*` / `Java.type`），
+  /// 这些依赖真正的 JVM 类库，本地 JS 引擎跑不了。
+  needsJava,
 
   /// 规则里有 `@xpath:` 或 `//` 开头的 XPath。
   needsXPath,
@@ -29,12 +36,15 @@ enum BookSourceStatus {
 extension BookSourceStatusLabel on BookSourceStatus {
   String get label => switch (this) {
     BookSourceStatus.ready => '可用',
-    BookSourceStatus.needsJs => '需要 JS',
+    BookSourceStatus.needsJs => '可用',
+    BookSourceStatus.needsJava => '需要 Java',
     BookSourceStatus.needsXPath => '需要 XPath',
     BookSourceStatus.incomplete => '规则不全',
   };
 
-  bool get usable => this == BookSourceStatus.ready;
+  /// `needsJs` 现在由原生 JS 运行时接管，同样算可用。
+  bool get usable =>
+      this == BookSourceStatus.ready || this == BookSourceStatus.needsJs;
 }
 
 /// 一个书源。
@@ -59,6 +69,7 @@ class BookSource {
     this.status = BookSourceStatus.ready,
     this.statusDetail = '',
     this.raw = const {},
+    this.variables = const {},
   });
 
   /// 稳定 ID：书源地址的 sha1 前 12 位（同一地址重复导入算同一个源）。
@@ -100,6 +111,9 @@ class BookSource {
   /// 原始 JSON（编辑/导出用）。
   final Map<String, dynamic> raw;
 
+  /// 书源变量（脚本里 `source.setVariable` / `java.put` 写下的值）。
+  final Map<String, String> variables;
+
   bool get usable => status.usable && enabled;
 
   /// 搜索链路里用的源标识，书籍 id 会以 `bs:` 前缀带上它。
@@ -122,6 +136,7 @@ class BookSource {
     BookSourceStatus? status,
     String? statusDetail,
     Map<String, dynamic>? raw,
+    Map<String, String>? variables,
   }) => BookSource(
     key: key,
     name: name ?? this.name,
@@ -142,6 +157,7 @@ class BookSource {
     status: status ?? this.status,
     statusDetail: statusDetail ?? this.statusDetail,
     raw: raw ?? this.raw,
+    variables: variables ?? this.variables,
   );
 
   /// 从「阅读」书源 JSON 构造。
@@ -170,6 +186,7 @@ class BookSource {
       tocRules: toc,
       contentRules: content,
       raw: json,
+      variables: _varsOf(json),
     );
     final probe = source._probeStatus();
     return source.copyWith(
@@ -185,26 +202,59 @@ class BookSource {
     return sha1.convert(utf8.encode(seed)).toString().substring(0, 12);
   }
 
-  /// 检测这个源能不能被本地规则引擎跑起来。
+  /// 检测这个源能不能被本地引擎跑起来。
+  ///
+  /// - XPath 规则：本地没实现，不可用
+  /// - `Packages.java.*` / `Java.type`：要真 JVM 类库，不可用
+  /// - `@js:`：交给原生 goja 运行时，可用
   (BookSourceStatus, String) _probeStatus() {
-    final all = <String>[
-      ...searchRules.values,
-      ...bookInfoRules.values,
-      ...tocRules.values,
-      ...contentRules.values,
-    ];
+    final critical = <String, String>{
+      '搜索地址': searchUrl,
+      '搜索列表': searchRules['bookList'] ?? '',
+      '搜索书址': searchRules['bookUrl'] ?? '',
+      '目录地址': bookInfoRules['tocUrl'] ?? '',
+      '目录列表': tocRules['chapterList'] ?? '',
+      '目录章节名': tocRules['chapterName'] ?? '',
+      '目录章节址': tocRules['chapterUrl'] ?? '',
+      '正文': contentRules['content'] ?? '',
+    };
 
-    for (final rule in all) {
-      if (rule.contains('@js:') || rule.contains('<js>') || rule.contains('java.')) {
-        return (BookSourceStatus.needsJs, _clip(rule));
-      }
+    for (final entry in critical.entries) {
+      final rule = entry.value.trim();
+      if (rule.isEmpty) continue;
       if (rule.startsWith('@xpath:') || rule.startsWith('//')) {
-        return (BookSourceStatus.needsXPath, _clip(rule));
+        return (
+          BookSourceStatus.needsXPath,
+          '${entry.key}用了 XPath：${_clip(rule)}',
+        );
       }
     }
 
-    final hasSearch = searchUrl.trim().isNotEmpty &&
-        searchRules['bookList'] != null;
+    // Java 类依赖：脚本里直接 new Java 对象，必须真 JVM
+    final jsLib = _str(raw['jsLib']);
+    if (_usesJavaClasses(jsLib)) {
+      return (
+        BookSourceStatus.needsJava,
+        'jsLib 里用了 Java 类（Packages.java.*），本地跑不了',
+      );
+    }
+    for (final entry in <String, String>{
+      ...{'搜索地址': searchUrl},
+      ...searchRules,
+      ...bookInfoRules,
+      ...tocRules,
+      ...contentRules,
+    }.entries) {
+      if (_usesJavaClasses(entry.value)) {
+        return (
+          BookSourceStatus.needsJava,
+          '${entry.key}用了 Java 类：${_clip(entry.value)}',
+        );
+      }
+    }
+
+    final hasSearch =
+        searchUrl.trim().isNotEmpty && searchRules['bookList'] != null;
     final hasExplore = exploreUrl.trim().isNotEmpty;
     if (!hasSearch && !hasExplore) {
       return (BookSourceStatus.incomplete, '缺少 searchUrl/bookList，也没有 exploreUrl');
@@ -214,6 +264,9 @@ class BookSource {
     }
     return (BookSourceStatus.ready, '');
   }
+
+  static bool _usesJavaClasses(String rule) =>
+      rule.contains('Packages.') || rule.contains('Java.type');
 
   static String _clip(String s) {
     final flat = s.replaceAll(RegExp(r'\s+'), ' ');
@@ -240,6 +293,7 @@ class BookSource {
     // 本项目私有字段：跨版本保留可用性判定结果，避免每次启动重算。
     '_status': status.name,
     '_statusDetail': statusDetail,
+    if (variables.isNotEmpty) '_vars': variables,
   };
 
   factory BookSource.fromJson(Map<String, dynamic> json) {
@@ -281,6 +335,17 @@ class BookSource {
     if (raw is String) return raw.trim();
     if (raw is Map && raw.isNotEmpty) return jsonEncode(raw);
     return '';
+  }
+
+  static Map<String, String> _varsOf(Map<String, dynamic> json) {
+    final raw = json['_vars'];
+    if (raw is! Map) return const {};
+    final out = <String, String>{};
+    raw.forEach((k, v) {
+      if (v == null) return;
+      out['$k'] = '$v';
+    });
+    return out;
   }
 
   static String _str(Object? v) => v == null ? '' : '$v';

@@ -106,6 +106,8 @@ type nativeInput struct {
 	LibraryDir string `json:"libraryDir"`
 	FilePath   string `json:"filePath"`
 	CategoryID int    `json:"categoryId"`
+	// 0.7.69：自定义书源的 JS 规则执行（整包透传给 legado 脚本运行时）。
+	Legado json.RawMessage `json:"legado"`
 }
 
 type nativeCatalogResult struct {
@@ -329,6 +331,24 @@ func nativeDispatch(input nativeInput) (any, error) {
 	if err := nativeAuthorizeInput(input); err != nil {
 		return nil, err
 	}
+	// 书源脚本执行不依赖引擎（只用 http + goja），放到引擎检查之前，
+	// 这样命令行调试工具与单元测试不用先 initialize 也能用。
+	switch input.Action {
+	case "legadoJs":
+		var request LegadoJsRequest
+		if err := json.Unmarshal(input.Legado, &request); err != nil {
+			return nil, errors.New("书源脚本参数无效")
+		}
+		response := EvalLegadoScript(request)
+		if !response.OK {
+			return nil, errors.New("书源脚本执行失败：" + response.Error)
+		}
+		return response, nil
+	case "resetLegadoCookies":
+		ResetLegadoCookies(input.Source)
+		return true, nil
+	}
+
 	nativeState.Lock()
 	if input.Action == "initialize" {
 		if nativeState.engine == nil {

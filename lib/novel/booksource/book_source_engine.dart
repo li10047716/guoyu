@@ -1,7 +1,7 @@
 /// 用「阅读」书源规则真的去抓书：搜索 / 详情 / 目录 / 正文。
 ///
-/// 只跑规则子集（见 [RuleEngine]）；命中 `@js:` 的规则会抛 [UnsupportedRule]，
-/// 这类源在导入时就已经被标成不可用了。
+/// 规则求值分两段：没有 `@js:` 的走本地 [RuleEngine]（同步），
+/// 带 `@js:` 的交给原生核心的 goja 运行时（见 [BookSourceRules]）。
 library;
 
 import 'dart:convert';
@@ -12,6 +12,7 @@ import 'package:html/parser.dart' as html_parser;
 import '../../core/novel_models.dart';
 import 'book_source.dart';
 import 'book_source_http.dart';
+import 'book_source_rules.dart';
 import 'rule_engine.dart';
 
 /// 书籍 / 章节 ID 的编解码。
@@ -44,6 +45,23 @@ class BookSourceIds {
   }
 }
 
+/// 一次搜索请求的解析结果。
+class _SearchRequest {
+  const _SearchRequest({
+    required this.url,
+    required this.method,
+    required this.body,
+    required this.charset,
+    required this.headers,
+  });
+
+  final String url;
+  final String method;
+  final String? body;
+  final String charset;
+  final Map<String, String> headers;
+}
+
 /// 书源执行器。
 class BookSourceEngine {
   const BookSourceEngine();
@@ -57,12 +75,12 @@ class BookSourceEngine {
     if (source.searchUrl.trim().isEmpty) {
       throw FetchFailure('这个源没有配置搜索地址');
     }
-    final request = _searchRequest(source, query, page);
+    final request = await _searchRequest(source, query, page);
     final result = await BookSourceHttp.fetch(
       request.url,
       method: request.method,
       body: request.body,
-      headers: _headers(source),
+      headers: {..._headers(source), ...request.headers},
       charset: request.charset.isNotEmpty ? request.charset : source.charset,
     );
     if (!result.ok) {
@@ -79,16 +97,34 @@ class BookSourceEngine {
       throw FetchFailure('这个源没有配置书籍列表规则');
     }
 
-    final nodes = RuleEngine.selectNodes(listRule, ctx);
+    final items = await _listItems(
+      listRule,
+      ctx,
+      source,
+      key: query,
+      page: page,
+    );
     final out = <Novel>[];
     final seen = <String>{};
-    for (final node in nodes) {
-      final item = RuleContext.child(node, ctx);
-      final name = _pick(source.searchRules['name'], item, fallbackRule: '@text');
-      final bookUrl = _pick(
-        source.searchRules['bookUrl'],
+    for (final item in items) {
+      final name = await BookSourceRules.one(
+        source.searchRules['name'],
         item,
-        fallbackRule: '@href',
+        source: source,
+        fallbackRule: '@text',
+        key: query,
+        page: page,
+      );
+      final bookUrl = RuleEngine.resolveUrl(
+        result.url,
+        await BookSourceRules.one(
+          source.searchRules['bookUrl'],
+          item,
+          source: source,
+          fallbackRule: '@href',
+          key: query,
+          page: page,
+        ),
       );
       if (name.isEmpty || bookUrl.isEmpty) continue;
       if (!seen.add(bookUrl)) continue;
@@ -97,11 +133,44 @@ class BookSourceEngine {
           id: BookSourceIds.encode(source.key, bookUrl),
           source: source.sourceTag,
           title: name,
-          author: _pick(source.searchRules['author'], item),
-          category: _pick(source.searchRules['kind'], item),
-          description: _pick(source.searchRules['intro'], item),
-          cover: _pick(source.searchRules['coverUrl'], item),
-          latest: _pick(source.searchRules['lastChapter'], item),
+          author: await BookSourceRules.one(
+            source.searchRules['author'],
+            item,
+            source: source,
+            key: query,
+            page: page,
+          ),
+          category: await BookSourceRules.one(
+            source.searchRules['kind'],
+            item,
+            source: source,
+            key: query,
+            page: page,
+          ),
+          description: await BookSourceRules.one(
+            source.searchRules['intro'],
+            item,
+            source: source,
+            key: query,
+            page: page,
+          ),
+          cover: RuleEngine.resolveUrl(
+            result.url,
+            await BookSourceRules.one(
+              source.searchRules['coverUrl'],
+              item,
+              source: source,
+              key: query,
+              page: page,
+            ),
+          ),
+          latest: await BookSourceRules.one(
+            source.searchRules['lastChapter'],
+            item,
+            source: source,
+            key: query,
+            page: page,
+          ),
         ),
       );
     }
@@ -122,15 +191,24 @@ class BookSourceEngine {
     final ctx = RuleContext(body: detailResult.body, url: detailResult.url);
     final rules = source.bookInfoRules;
 
-    final name = _pick(rules['name'], ctx, fallbackRule: '@text');
-    final author = _pick(rules['author'], ctx);
-    final kind = _pick(rules['kind'], ctx);
-    final intro = _pick(rules['intro'], ctx);
-    final cover = _pick(rules['coverUrl'], ctx);
-    final latest = _pick(rules['lastChapter'], ctx);
+    final name = await BookSourceRules.one(
+      rules['name'],
+      ctx,
+      source: source,
+      fallbackRule: '@text',
+    );
+    final author = await BookSourceRules.one(rules['author'], ctx, source: source);
+    final kind = await BookSourceRules.one(rules['kind'], ctx, source: source);
+    final intro = await BookSourceRules.one(rules['intro'], ctx, source: source);
+    final cover = await BookSourceRules.one(rules['coverUrl'], ctx, source: source);
+    final latest = await BookSourceRules.one(rules['lastChapter'], ctx, source: source);
 
-    var tocUrl = _pick(rules['tocUrl'], ctx);
-    if (tocUrl.isEmpty) tocUrl = detailResult.url;
+    var tocUrl = await BookSourceRules.one(rules['tocUrl'], ctx, source: source);
+    if (tocUrl.isEmpty) {
+      tocUrl = detailResult.url;
+    } else {
+      tocUrl = RuleEngine.resolveUrl(detailResult.url, tocUrl);
+    }
 
     final chapters = await this.chapters(source, tocUrl);
 
@@ -142,7 +220,7 @@ class BookSourceEngine {
         author: author,
         category: kind,
         description: intro,
-        cover: cover,
+        cover: RuleEngine.resolveUrl(detailResult.url, cover),
         latest: latest,
         chapters: chapters.length,
       ),
@@ -169,14 +247,28 @@ class BookSourceEngine {
       throw FetchFailure('目录打开失败（HTTP ${result.status}）',
           status: result.status);
     }
+
     final ctx = RuleContext(body: result.body, url: result.url);
-    final nodes = RuleEngine.selectNodes(listRule, ctx);
+    final items = await _listItems(listRule, ctx, source);
+
     final out = <NovelChapterItem>[];
     final seen = <String>{};
-    for (final node in nodes) {
-      final item = RuleContext.child(node, ctx);
-      final title = _pick(rules['chapterName'], item, fallbackRule: '@text');
-      final url = _pick(rules['chapterUrl'], item, fallbackRule: '@href');
+    for (final item in items) {
+      final title = await BookSourceRules.one(
+        rules['chapterName'],
+        item,
+        source: source,
+        fallbackRule: '@text',
+      );
+      final url = RuleEngine.resolveUrl(
+        result.url,
+        await BookSourceRules.one(
+          rules['chapterUrl'],
+          item,
+          source: source,
+          fallbackRule: '@href',
+        ),
+      );
       if (title.isEmpty || url.isEmpty) continue;
       if (!seen.add(url)) continue;
       out.add(
@@ -217,10 +309,10 @@ class BookSourceEngine {
       if (page == 0) {
         title = _pageTitle(result.body);
       }
-      buffer.addAll(RuleEngine.selectStrings(rule, ctx));
+      buffer.addAll(await BookSourceRules.strings(rule, ctx, source: source));
       final nextRule = source.contentRules['nextContentUrl'];
       if (nextRule == null || nextRule.trim().isEmpty) break;
-      final next = RuleEngine.selectOne(nextRule, ctx);
+      final next = await BookSourceRules.one(nextRule, ctx, source: source);
       if (next.isEmpty || next == current) break;
       current = RuleEngine.resolveUrl(result.url, next);
     }
@@ -234,21 +326,193 @@ class BookSourceEngine {
     );
   }
 
-  // ---------------------------------------------------------------- 工具
-
-  String _pick(
-    String? rule,
-    RuleContext ctx, {
-    String fallbackRule = '',
-  }) {
-    final actual = (rule == null || rule.trim().isEmpty) ? fallbackRule : rule;
-    if (actual.isEmpty) return '';
-    try {
-      return RuleEngine.selectOne(actual, ctx);
-    } on UnsupportedRule {
-      return '';
+  /// 求「列表规则」，返回可继续取值的上下文列表。
+  ///
+  /// 列表规则有三种形态：
+  /// - CSS / JSONPath → 直接选节点
+  /// - `@js:` 返回 JSON 数组（每项是对象或 JSON 字符串）→ 每项一个上下文
+  /// - `@js:` 返回 HTML 片段 → 当作页面继续解析
+  Future<List<RuleContext>> _listItems(
+    String rule,
+    RuleContext ctx,
+    BookSource source, {
+    String key = '',
+    int page = 1,
+  }) async {
+    if (!BookSourceRules.hasJs(rule)) {
+      return [
+        for (final node in RuleEngine.selectNodes(rule, ctx))
+          RuleContext.child(node, ctx),
+      ];
     }
+
+    final rendered = await BookSourceRules.strings(
+      rule,
+      ctx,
+      source: source,
+      key: key,
+      page: page,
+    );
+    if (rendered.isEmpty) return const [];
+    final text = rendered.join('\n').trim();
+    if (text.isEmpty) return const [];
+
+    Object? decoded;
+    if (text.startsWith('[') || text.startsWith('{')) {
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        decoded = null;
+      }
+    }
+    if (decoded is List) {
+      final out = <RuleContext>[];
+      for (final row in decoded) {
+        if (row is String) {
+          if (row.trim().isNotEmpty) {
+            out.add(RuleContext(body: row, url: ctx.url, vars: ctx.vars));
+          }
+        } else if (row != null) {
+          out.add(
+            RuleContext(
+              body: jsonEncode(row),
+              url: ctx.url,
+              vars: ctx.vars,
+            ),
+          );
+        }
+      }
+      return out;
+    }
+    if (decoded is Map) {
+      return [RuleContext(body: jsonEncode(decoded), url: ctx.url, vars: ctx.vars)];
+    }
+
+    // 返回的是 HTML：当作新页面，让后续规则在上面选
+    final doc = html_parser.parse(text);
+    final anchors = doc.querySelectorAll('a');
+    if (anchors.isNotEmpty) {
+      final page = RuleContext(body: text, url: ctx.url, vars: ctx.vars);
+      return [for (final node in anchors) RuleContext.child(node, page)];
+    }
+    return [RuleContext(body: text, url: ctx.url, vars: ctx.vars)];
   }
+
+  // ---------------------------------------------------------------- 搜索地址
+
+  Future<_SearchRequest> _searchRequest(
+    BookSource source,
+    String query,
+    int page,
+  ) async {
+    final template = source.searchUrl.trim();
+
+    // 整条 searchUrl 是脚本：让它返回 `url` 或 `url,{options}`
+    if (template.startsWith('@js:')) {
+      final value = await BookSourceRules.script(
+        source,
+        template.substring(4),
+        key: query,
+        page: page,
+      );
+      if (value.isEmpty) {
+        throw FetchFailure('搜索地址脚本没有返回结果');
+      }
+      final parsed = _splitOptions(value);
+      var address = parsed.url;
+      if (!address.contains('://')) {
+        address = RuleEngine.resolveUrl(source.url, address);
+      }
+      return _SearchRequest(
+        url: address,
+        method: parsed.method,
+        body: parsed.body,
+        charset: parsed.charset,
+        headers: parsed.headers,
+      );
+    }
+
+    var body = template;
+    var method = 'GET';
+    String? postBody;
+    var charset = '';
+    var headers = const <String, String>{};
+
+    final optionsAt = body.lastIndexOf(',{');
+    if (optionsAt > 0 && body.endsWith('}')) {
+      final optionsText = body.substring(optionsAt + 1);
+      body = body.substring(0, optionsAt).trim();
+      try {
+        final options = jsonDecode(optionsText);
+        if (options is Map) {
+          method = '${options['method'] ?? 'GET'}'.toUpperCase();
+          postBody = options['body']?.toString();
+          charset = '${options['charset'] ?? ''}';
+          final rawHeaders = options['headers'];
+          if (rawHeaders is Map) {
+            headers = {
+              for (final entry in rawHeaders.entries)
+                '${entry.key}': '${entry.value}',
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    final variables = {'key': query, 'page': '$page'};
+    var url = _expand(body, variables, charset: charset);
+    url = RuleEngine.resolveUrl(source.url, url);
+    if (postBody != null) {
+      postBody = _expand(postBody, variables, charset: charset);
+    }
+    return _SearchRequest(
+      url: url,
+      method: method,
+      body: postBody,
+      charset: charset,
+      headers: headers,
+    );
+  }
+
+  /// 拆 `url,{method,body,charset,headers}`。
+  _SearchRequest _splitOptions(String raw) {
+    final text = raw.trim();
+    var address = text;
+    var method = 'GET';
+    String? body;
+    var charset = '';
+    var headers = const <String, String>{};
+
+    final optionsAt = text.lastIndexOf(',{');
+    if (optionsAt > 0 && text.endsWith('}')) {
+      final optionsText = text.substring(optionsAt + 1);
+      try {
+        final options = jsonDecode(optionsText);
+        if (options is Map) {
+          address = text.substring(0, optionsAt).trim();
+          method = '${options['method'] ?? 'GET'}'.toUpperCase();
+          body = options['body']?.toString();
+          charset = '${options['charset'] ?? ''}';
+          final rawHeaders = options['headers'];
+          if (rawHeaders is Map) {
+            headers = {
+              for (final entry in rawHeaders.entries)
+                '${entry.key}': '${entry.value}',
+            };
+          }
+        }
+      } catch (_) {}
+    }
+    return _SearchRequest(
+      url: address,
+      method: method,
+      body: body,
+      charset: charset,
+      headers: headers,
+    );
+  }
+
+  // ---------------------------------------------------------------- 工具
 
   Map<String, String> _headers(BookSource source) {
     final raw = source.header.trim();
@@ -267,68 +531,41 @@ class BookSourceEngine {
     return const {};
   }
 
-  ({String url, String method, String? body, String charset}) _searchRequest(
-    BookSource source,
-    String query,
-    int page,
-  ) {
-    var template = source.searchUrl.trim();
-    var method = 'GET';
-    String? postBody;
-    var charset = '';
-
-    // 阅读允许 `url,{"method":"POST","body":"...","charset":"gbk"}` 这种写法
-    final optionsAt = template.lastIndexOf(',{');
-    if (optionsAt > 0 && template.endsWith('}')) {
-      final optionsText = template.substring(optionsAt + 1);
-      template = template.substring(0, optionsAt).trim();
-      try {
-        final options = jsonDecode(optionsText);
-        if (options is Map) {
-          method = '${options['method'] ?? 'GET'}'.toUpperCase();
-          postBody = options['body']?.toString();
-          charset = '${options['charset'] ?? ''}';
-        }
-      } catch (_) {}
-    }
-
-    final variables = {'key': query, 'page': '$page'};
-    final url = _expand(template, variables, encodeKey: true, charset: charset);
-    if (postBody != null) {
-      postBody = _expand(postBody, variables, encodeKey: false, charset: charset);
-    }
-    return (url: url, method: method, body: postBody, charset: charset);
-  }
-
-  /// 展开 `{{...}}`；`{{key}}` 在 URL 里要按目标站编码转义。
+  /// 展开 `{{...}}`；`{{key}}` 要按目标站编码转义。
   String _expand(
     String template,
     Map<String, String> vars, {
-    required bool encodeKey,
     required String charset,
   }) {
     final pattern = RegExp(r'\{\{([^}]+)\}\}');
     return template.replaceAllMapped(pattern, (m) {
       final expr = m.group(1)!.trim();
-      if (expr == 'key' && encodeKey) {
+      if (expr == 'key') {
         return _percentEncode(vars['key'] ?? '', charset);
+      }
+      // 阅读里常见的 `{{java.encodeURI(key)}}` / `{{java.encodeURIComponent(key)}}`
+      final encodeCall = RegExp(
+        r'^java\.encodeURI(?:Component)?\(\s*(.+?)\s*\)$',
+      ).firstMatch(expr);
+      if (encodeCall != null) {
+        final arg = encodeCall.group(1)!;
+        final value =
+            vars[arg] ?? arg.replaceAll(RegExp(r'''^['"]|['"]$'''), '');
+        return _percentEncode(value, charset);
       }
       final direct = vars[expr];
       if (direct != null) return direct;
-      final number = RuleEngine.expandTemplate('{{$expr}}', RuleContext(
-        body: '',
-        vars: vars,
-      ));
-      return number;
+      return RuleEngine.expandTemplate(
+        '{{$expr}}',
+        RuleContext(body: '', vars: vars),
+      );
     });
   }
 
   String _percentEncode(String text, String charset) {
-    final isGbk = charset.toLowerCase().contains('gbk') ||
-        charset.toLowerCase().contains('gb2312');
-    final bytes = isGbk
-        ? _gbkBytes(text)
-        : utf8.encode(text);
+    final lower = charset.toLowerCase();
+    final isGbk = lower.contains('gbk') || lower.contains('gb2312');
+    final bytes = isGbk ? _gbkBytes(text) : utf8.encode(text);
     final out = StringBuffer();
     for (final byte in bytes) {
       if ((byte >= 0x30 && byte <= 0x39) ||
