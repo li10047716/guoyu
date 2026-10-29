@@ -81,15 +81,15 @@ void main() {
       expect(source.status.usable, isTrue);
     });
 
-    test('直接实例化 Java 类的源被标记为需要 Java', () {
+    test('直接实例化 Java 类的源也交给本地运行时', () {
+      // Java 类库已实现常用子集（MessageDigest / Cipher / Base64 ...），
+      // 这类源不再预先判死，能不能跑由实测决定。
       final javaSource = _readySource()
         ..['bookSourceName'] = '番茄'
         ..['jsLib'] =
             'var d = Packages.java.security.MessageDigest.getInstance("MD5");';
       final source = BookSource.fromLegado(javaSource);
-      expect(source.status, BookSourceStatus.needsJava);
-      expect(source.status.usable, isFalse);
-      expect(source.statusDetail, contains('Java'));
+      expect(source.status.usable, isTrue);
     });
 
     test('缺目录/正文规则时标记为规则不全', () {

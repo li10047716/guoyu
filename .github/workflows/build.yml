@@ -17,9 +17,8 @@ concurrency:
 env:
   GOPROXY: https://proxy.golang.org,direct
   GOSUMDB: sum.golang.org
-  # pubspec.lock 里的依赖 URL 记录的是国内镜像（本地构建用镜像），
-  # CI 必须用同一个 host 才能通过 build_*.py 里的 pub get --enforce-lockfile。
-  PUB_HOSTED_URL: https://pub.flutter-io.cn
+  # pub 源必须与 pubspec.lock 里记录的 url 一致（--enforce-lockfile 会校验），
+  # lock 记的是 pub.dev，所以这里不要覆盖成国内镜像。
 
 jobs:
   checks:

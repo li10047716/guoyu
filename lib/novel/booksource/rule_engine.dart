@@ -69,6 +69,11 @@ class RuleContext {
   /// Legado 里脚本的 `result` 默认就是这个。
   String get currentText => _root?.outerHtml ?? body;
 
+  /// 元素上下文时返回那个元素，页面上下文返回 null。
+  ///
+  /// 书源的 JS 规则靠它判断 `result` 该给元素（能 `.select()`）还是字符串。
+  dom.Element? get elementRoot => _root;
+
   dom.Document get document => _document ??= html_parser.parse(body);
 
   /// 正文能当 JSON 用时返回解析结果，否则返回 null。
@@ -149,6 +154,26 @@ class RuleEngine {
       if (text.isNotEmpty) out.add(text);
     }
     return out;
+  }
+
+  /// 求值并区分「选到元素」还是「取到文本」。
+  ///
+  /// 书源的 JS 规则里，前缀是纯选择器时 `result` 是元素对象
+  /// （可以继续 `.select('td').get(1).attr('href')`），
+  /// 前缀是取值规则时 `result` 就是字符串。
+  static ({String text, bool isElement}) selectOneTyped(
+    String rule,
+    RuleContext ctx, {
+    String fallback = '',
+  }) {
+    for (final value in _eval(rule, ctx)) {
+      if (value is dom.Element) {
+        return (text: value.outerHtml, isElement: true);
+      }
+      final text = '$value'.trim();
+      if (text.isNotEmpty) return (text: text, isElement: false);
+    }
+    return (text: fallback, isElement: false);
   }
 
   /// 求出一个字符串（取第一个非空）。

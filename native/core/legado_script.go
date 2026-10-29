@@ -58,6 +58,9 @@ type LegadoJsRequest struct {
 	BaseURL string `json:"baseUrl"`
 	// Result 前置规则的结果，脚本里以 result 访问。
 	Result string `json:"result"`
+	// ResultIsElement 为真时 Result 是元素的 outerHTML，
+	// 脚本里的 result 应该拿到一个能 .select()/.attr() 的元素对象（jsoup 语义）。
+	ResultIsElement bool `json:"resultElement"`
 	// Extras 额外注入的全局变量（如正文页的 title 等）。
 	Extras map[string]string `json:"extras"`
 	Source LegadoJsSource    `json:"source"`
@@ -141,7 +144,16 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	_ = vm.Set("key", req.Key)
 	_ = vm.Set("page", req.Page)
 	_ = vm.Set("baseUrl", req.BaseURL)
-	_ = vm.Set("result", req.Result)
+	if req.ResultIsElement && strings.TrimSpace(req.Result) != "" {
+		element := legadoFirstElement(legadoParseFragment(req.Result))
+		if element != nil {
+			_ = vm.Set("result", legadoWrapNode(vm, element, req.BaseURL))
+		} else {
+			_ = vm.Set("result", req.Result)
+		}
+	} else {
+		_ = vm.Set("result", req.Result)
+	}
 	for k, v := range req.Extras {
 		_ = vm.Set(k, v)
 	}
@@ -328,6 +340,20 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	})
 	_ = vm.Set("java", javaObj)
 
+	// ---- jsoup / Java 类库 ----
+	orgObj := vm.NewObject()
+	_ = orgObj.Set("jsoup", legadoJsoupObject(vm, req.BaseURL))
+	_ = vm.Set("org", orgObj)
+	packagesObj, javaResolver := legadoPackagesObject(vm, req.BaseURL)
+	_ = vm.Set("Packages", packagesObj)
+	javaNamespace := vm.NewObject()
+	_ = javaNamespace.Set("type", legadoJavaType(vm, javaResolver))
+	_ = vm.Set("Java", javaNamespace)
+	// Rhino 的 JavaImporter，书源里配合 with(...){...} 用
+	_ = vm.Set("JavaImporter", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(packagesObj)
+	})
+
 	// Legado 里 java.get 与读变量同名冲突，这里用一个显式的变量访问对象补上
 	varsObj := vm.NewObject()
 	_ = varsObj.Set("get", func(call goja.FunctionCall) goja.Value {
@@ -397,6 +423,11 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	}
 
 	value, err := vm.RunString(req.Code)
+	if err != nil && strings.Contains(err.Error(), "Illegal return statement") {
+		// 书源脚本经常直接写 `return x;`（Legado 的 eval 容忍这种写法），
+		// 先按原样跑，报这个错时再包成函数重试。
+		value, err = vm.RunString("(function(){\n" + req.Code + "\n})()")
+	}
 	if err != nil {
 		resp.Error = shortErr(err)
 		return resp

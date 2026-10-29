@@ -30,10 +30,14 @@ class LegadoScript {
   /// 执行 [code]（已经去掉 `@js:` 前缀）。
   ///
   /// [result] 对应脚本里的 `result`，[extraVars] 会作为额外全局变量注入。
+  ///
+  /// [resultIsElement] 为真表示 [result] 是一段 HTML：脚本里拿到的
+  /// `result` 会是带 `select()/attr()/text()` 的元素对象（jsoup 语义）。
   static Future<LegadoScriptResult> run(
     BookSource source,
     String code, {
     String result = '',
+    bool resultIsElement = false,
     String key = '',
     int page = 1,
     String baseUrl = '',
@@ -50,6 +54,7 @@ class LegadoScript {
       'page': page,
       'baseUrl': baseUrl.isEmpty ? source.url : baseUrl,
       'result': result,
+      'resultElement': resultIsElement,
       'extras': extraVars,
       'source': {
         'key': source.key,

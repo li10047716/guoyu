@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.69+129** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.70+130** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,9 +14,39 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.69）
+## 二、本次更新（0.7.70）
 
-给自定义书源补上**JS 引擎**：Legado 生态里绝大多数的 `@js:` 规则现在都能跑了。
+把书源脚本里的 **jsoup** 和 **Java 类库**补齐，可用书源的覆盖面再扩一圈。
+
+- **jsoup**：`org.jsoup.Jsoup.parse(html).select(css)` 整套复刻 —— `text()` / `ownText()` /
+  `html()` / `outerHtml()` / `attr()` / `abs:href` / `select()` / `selectFirst()` /
+  `getElementsByTag()` / `parent()` / `children()` / `nextElementSibling()`，以及返回集合上的
+  `size()` / `get(i)` / `first()` / `last()` / `each()`。底层是 `x/net/html` + `cascadia`。
+- **元素级 `result`**：规则前缀是纯选择器时，脚本里的 `result` 是元素对象，
+  可以接着 `result.select('td').get(1).select('a').attr('href')`；前缀是取值规则时仍是字符串。
+  页面级脚本拿到的 `result` 还是整页正文，`JSON.parse(result)` 照旧能用。
+- **Java 类库子集**（`Packages.*` / `Java.type`）：`java.lang` 的 `String` / `StringBuilder` /
+  `Integer` / `Long` / `System` / `Math`、`java.util` 的 `Arrays` / `Base64` / `UUID` / `Random`、
+  `java.security` 的 `MessageDigest` / `SecureRandom`、
+  `javax.crypto` 的 `Cipher`（AES/CBC、ECB、CTR + PKCS5 填充）与 `spec.SecretKeySpec` / `IvParameterSpec`、
+  `java.math.BigInteger`、`java.nio.charset.Charset`、
+  `java.io` 的 `ByteArrayOutputStream` / `ByteArrayInputStream` / `InputStreamReader` / `BufferedReader`、
+  `java.util.zip` 的 `GZIPInputStream` / `GZIPOutputStream`。类对象本身可 `new`，静态方法照常调。
+- **顶层 `return` 兼容**：书源脚本常直接写 `return out;`，先原样执行，报
+  `Illegal return statement` 时自动包成函数重试。
+- **选择器容错**：`[href^=/novel]` 这种属性值不加引号的写法会先补引号再解析；
+  畸形选择器不再让整个脚本崩掉。另补 `JavaImporter`。
+- **状态判定放宽**：`Packages.java.*` 不再直接判「不可用」（Java 子集已经能跑一部分），
+  只有 XPath 和规则不全才标红。
+
+实测：源仓库抽 29 个近期书源，全链路通过从 5 个增加到 **7 个**
+（存书啦、全本小说网、若雨中文、神文小说 ×2、52 书库、小原文学网）；
+「存书啦」就是靠 Java 类库子集跑通的。剩下跑不通的集中在站点 403/超时、
+Cloudflare 挑战页、导出数据损坏（`bookSourceUrl` 写成中文）这几类。
+
+### 0.7.69：书源内置 JS 引擎
+
+给自定义书源补上 JS 运行时，Legado 生态里的 `@js:` 规则能跑了。
 
 - **内置 JS 运行时**：用纯 Go 的 goja 跑书源脚本，放在原生核心里，
   Windows / Android / iOS 三端共用一份实现，不额外引入解释器进程。
@@ -31,18 +61,10 @@
   书源里常见的 `JSON.parse(result)`、`result.match(...)` 都能直接工作。
 - **列表规则支持 JS**：`bookList` / `chapterList` 是脚本时，返回的 JSON 数组会拆成逐项上下文，
   后面接着用 `$.name` 这类 JSONPath 取字段；返回 HTML 片段则当作页面继续解析。
-- **状态判定更准**：`@js:` 不再等于不可用；只有用 XPath、或脚本里直接
-  `new Packages.java.*`（要真 JVM 类库，比如番茄源的签名体系）才标「需要 Java」。
 - **修掉三个会让源直接不可用的 bug**：搜索地址写成相对路径时没拼主域名、
   书源 header 里出现中文字符导致请求崩溃并被误报成「地址不合法」、
   可选字段用到 JS 时整个源被判死（现在只会跳过该字段）。
   另外重定向改成自己跟，POST 遇到 301/302 也能落到正确页面。
-- 调试工具：`flutter test test/booksource_live_test.dart`（配 `LEGADO_LIVE=1`、`LEGADO_SOURCE`、
-  `DUANJU_CORE_DLL`）会真去搜一本书、开目录、抓一章正文，用来验证整条链路。
-
-实测：源仓库抽 29 个近期书源，28 个含 JS；其中 10 个要真 JVM（`Packages.java.*`）仍不可用，
-5 个搜索 → 详情 → 目录 → 正文全链路跑通（全本小说网、神文小说 ×2、52 书库、小原文学网），
-其余是站点本身 403 / 超时 / 依赖 jsoup（`org.jsoup.Jsoup.parse`）——jsoup 这类后面再补。
 
 ### 书源功能（0.7.68）
 
@@ -56,7 +78,7 @@
   正文会把 `<br>` 转成段落，并过滤广告行。
 - **GBK 站点**：书源声明 `charset` 为 gbk/gb2312 时按 GBK 解码，POST 搜索词也按目标站编码。
 - 调试工具：`flutter test test/booksource_live_test.dart`（需 `LEGADO_LIVE=1`、`LEGADO_SOURCE`、`DUANJU_CORE_DLL`）
-  会对指定书源真跑一遍「搜索 → 详情 → 目录 → 正文」。
+  会对指定书源真跑一遍「搜索 → 详情 → 目录 → 正文」；带 `LEGADO_DIR` 则遍历整个目录批量评估。
 
 ## 三、往期更新
 
@@ -631,6 +653,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
+| 0.7.70 | 2026-10-29 | 小说：书源脚本补 jsoup（org.jsoup、元素级 result、Elements 集合）与 Java 类库子集（String/Arrays/Base64/MessageDigest/BigInteger/Cipher/GZIP…），顶层 return 兼容、选择器容错；实测全链路通过源 5 → 7 |
 | 0.7.69 | 2026-10-29 | 小说：书源内置 JS 引擎（goja，三端共用）——`@js:` 规则、同步 `java.ajax/post`、base64/md5/cookie/变量、列表规则返回 JSON 数组、`result` 语义对齐；修相对 searchUrl、中文 header 崩溃、可选 JS 字段误判、POST 重定向 |
 | 0.7.50 | 2026-10-28 | 新增站源奈飞工厂（电影 / 连续剧 / 漫剧 / 综艺 / 纪录片五档全接入，列表走 JSON 接口，多线路自动兜底，直链 m3u8） |
 | 0.7.51 | 2026-10-28 | 奈飞工厂搜索改走结果页，可翻页到全量（原来联想接口硬上限 20 条且不分页） |

@@ -206,8 +206,10 @@ class BookSource {
   /// 检测这个源能不能被本地引擎跑起来。
   ///
   /// - XPath 规则：本地没实现，不可用
-  /// - `Packages.java.*` / `Java.type`：要真 JVM 类库，不可用
-  /// - `@js:`：交给原生 goja 运行时，可用
+  /// - 规则不全（缺目录/正文）：不可用
+  /// - `@js:` / `<js>` / `Packages.java.*`：都交给原生 goja 运行时，
+  ///   Java 类库已实现常用子集（见 `legado_java.go`），因此不再预先判死，
+  ///   真正跑不跑得通由实测决定。
   (BookSourceStatus, String) _probeStatus() {
     final critical = <String, String>{
       '搜索地址': searchUrl,
@@ -231,29 +233,6 @@ class BookSource {
       }
     }
 
-    // Java 类依赖：脚本里直接 new Java 对象，必须真 JVM
-    final jsLib = _str(raw['jsLib']);
-    if (_usesJavaClasses(jsLib)) {
-      return (
-        BookSourceStatus.needsJava,
-        'jsLib 里用了 Java 类（Packages.java.*），本地跑不了',
-      );
-    }
-    for (final entry in <String, String>{
-      ...{'搜索地址': searchUrl},
-      ...searchRules,
-      ...bookInfoRules,
-      ...tocRules,
-      ...contentRules,
-    }.entries) {
-      if (_usesJavaClasses(entry.value)) {
-        return (
-          BookSourceStatus.needsJava,
-          '${entry.key}用了 Java 类：${_clip(entry.value)}',
-        );
-      }
-    }
-
     final hasSearch =
         searchUrl.trim().isNotEmpty && searchRules['bookList'] != null;
     final hasExplore = exploreUrl.trim().isNotEmpty;
@@ -265,9 +244,6 @@ class BookSource {
     }
     return (BookSourceStatus.ready, '');
   }
-
-  static bool _usesJavaClasses(String rule) =>
-      rule.contains('Packages.') || rule.contains('Java.type');
 
   static String _clip(String s) {
     final flat = s.replaceAll(RegExp(r'\s+'), ' ');

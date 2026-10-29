@@ -102,14 +102,19 @@ class BookSourceRules {
     final prefix = split.prefix;
     final code = split.code;
 
-    // 没有前置规则时，`result` 就是当前上下文的原文（整页或元素 HTML），
-    // 这和 Legado 的语义一致 —— 脚本里经常直接 JSON.parse(result)。
+    // 没有前置规则时，`result` 就是当前上下文：元素上下文给元素对象
+    // （书源里常见 `result.select('td')`），页面上下文给整页正文
+    // （脚本里常直接 JSON.parse(result)）。
     var prev = ctx.currentText;
+    var prevIsElement = ctx.elementRoot != null;
     if (prefix.trim().isNotEmpty) {
       try {
-        prev = RuleEngine.selectOne(prefix, ctx);
+        final typed = RuleEngine.selectOneTyped(prefix, ctx);
+        prev = typed.text;
+        prevIsElement = typed.isElement;
       } on UnsupportedRule {
         prev = '';
+        prevIsElement = false;
       }
     }
 
@@ -117,6 +122,7 @@ class BookSourceRules {
       source,
       code,
       result: prev,
+      resultIsElement: prevIsElement,
       key: key,
       page: page,
       baseUrl: ctx.url,
