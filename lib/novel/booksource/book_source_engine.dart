@@ -408,10 +408,11 @@ class BookSourceEngine {
     final template = source.searchUrl.trim();
 
     // 整条 searchUrl 是脚本：让它返回 `url` 或 `url,{options}`
-    if (template.startsWith('@js:')) {
+    final scriptPart = BookSourceRules.splitJs(template);
+    if (scriptPart != null && scriptPart.prefix.trim().isEmpty) {
       final value = await BookSourceRules.script(
         source,
-        template.substring(4),
+        scriptPart.code,
         key: query,
         page: page,
       );

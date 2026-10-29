@@ -11,6 +11,8 @@ package core
 
 import (
 	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -233,6 +235,96 @@ func EvalLegadoScript(req LegadoJsRequest) (resp LegadoJsResponse) {
 	})
 	_ = javaObj.Set("encodeURI", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(encodeURIComponent(call.Argument(0).String()))
+	})
+
+	// ---- 设备信息：书源基本只是拿来做设备指纹，给稳定假值就够 ----
+	_ = javaObj.Set("androidId", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoDeviceID(req.Source.Key))
+	})
+	_ = javaObj.Set("deviceID", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoDeviceID(req.Source.Key))
+	})
+	_ = javaObj.Set("getWebViewUA", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoWebViewUA)
+	})
+
+	// ---- 编解码补齐 ----
+	_ = javaObj.Set("hexDecodeToString", func(call goja.FunctionCall) goja.Value {
+		bytes, err := hex.DecodeString(strings.TrimSpace(call.Argument(0).String()))
+		if err != nil {
+			return vm.ToValue("")
+		}
+		return vm.ToValue(string(bytes))
+	})
+	_ = javaObj.Set("hexDecodeToByteArray", func(call goja.FunctionCall) goja.Value {
+		bytes, err := hex.DecodeString(strings.TrimSpace(call.Argument(0).String()))
+		if err != nil {
+			return vm.ToValue(vm.NewArray())
+		}
+		return vm.ToValue(legadoByteArray(vm, bytes))
+	})
+	_ = javaObj.Set("base64DecodeToByteArray", func(call goja.FunctionCall) goja.Value {
+		bytes, err := base64.StdEncoding.DecodeString(call.Argument(0).String())
+		if err != nil {
+			return vm.ToValue(vm.NewArray())
+		}
+		return vm.ToValue(legadoByteArray(vm, bytes))
+	})
+	_ = javaObj.Set("digestHex", func(call goja.FunctionCall) goja.Value {
+		algo := strings.ToLower(call.Argument(0).String())
+		text := call.Argument(1).String()
+		return vm.ToValue(legadoDigestHex(algo, text))
+	})
+
+	// ---- 批量请求 / 动态加载脚本 ----
+	_ = javaObj.Set("ajaxAll", func(call goja.FunctionCall) goja.Value {
+		array := vm.NewArray()
+		if list, ok := call.Argument(0).Export().([]interface{}); ok {
+			for index, item := range list {
+				body, err := state.doRequest(fmt.Sprint(item))
+				if err != nil {
+					body = ""
+				}
+				_ = array.Set(fmt.Sprint(index), body)
+			}
+		}
+		return vm.ToValue(array)
+	})
+	_ = javaObj.Set("importScript", func(call goja.FunctionCall) goja.Value {
+		address := call.Argument(0).String()
+		if !strings.Contains(address, "://") {
+			// 相对地址（含 `/prefix/...` 这种根相对）按书源主域补全
+			base, err := url.Parse(req.Source.URL)
+			if err == nil {
+				if ref, refErr := url.Parse(address); refErr == nil {
+					address = base.ResolveReference(ref).String()
+				}
+			}
+		}
+		body, err := state.doRequest(address)
+		if err != nil {
+			return goja.Undefined()
+		}
+		if _, err := vm.RunString(body); err != nil {
+			return goja.Undefined()
+		}
+		return goja.Undefined()
+	})
+
+	// ---- 交互式接口：本地没有浏览器 UI，统一给空值，别让脚本直接 TypeError ----
+	for _, name := range []string{
+		"startBrowser", "startBrowserAwait", "startBrowserDp", "showBrowser",
+		"showReadingBrowser", "webView", "open", "openUrl", "getVerificationCode",
+		"refreshExplore", "refreshTocUrl", "getReadBookConfigMap",
+		"getThemeConfigMap", "upLoginData", "copyText", "setContent",
+	} {
+		_ = javaObj.Set(name, func(call goja.FunctionCall) goja.Value {
+			return vm.ToValue("")
+		})
+	}
+	// qread() 是「轻阅读」的设备标记，这里按普通安卓处理，明确抛错走别的分支
+	_ = javaObj.Set("qread", func(call goja.FunctionCall) goja.Value {
+		panic(vm.NewTypeError("qread is not supported"))
 	})
 	_ = vm.Set("java", javaObj)
 
@@ -558,3 +650,43 @@ func shortErr(err error) string {
 	return text
 }
 
+
+// legadoWebViewUA 是 java.getWebViewUA() 的返回值。
+//
+// 书源主要拿它冒充浏览器内核，用安卓 WebView 的常见串最稳。
+const legadoWebViewUA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230805.001; wv) " +
+	"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.163 Mobile Safari/537.36"
+
+// legadoDeviceID 生成稳定的伪设备号。
+//
+// 书源（尤其聚合源）用 java.androidId() / java.deviceID() 做设备指纹，
+// 值本身不重要，但要保证同一次运行里前后一致、不同源之间不串味。
+func legadoDeviceID(seed string) string {
+	sum := md5.Sum([]byte("duanju-legado-device:" + seed))
+	return hex.EncodeToString(sum[:])
+}
+
+// legadoByteArray 把字节切片转成 JS 的整数数组（Legado 返回的是 byte[]）。
+func legadoByteArray(vm *goja.Runtime, bytes []byte) goja.Value {
+	values := make([]interface{}, len(bytes))
+	for index, b := range bytes {
+		values[index] = int64(b)
+	}
+	return vm.ToValue(values)
+}
+
+// legadoDigestHex 实现 java.digestHex(algo, text)。
+func legadoDigestHex(algo, text string) string {
+	switch algo {
+	case "md5":
+		sum := md5.Sum([]byte(text))
+		return hex.EncodeToString(sum[:])
+	case "sha1":
+		sum := sha1.Sum([]byte(text))
+		return hex.EncodeToString(sum[:])
+	case "sha256":
+		sum := sha256.Sum256([]byte(text))
+		return hex.EncodeToString(sum[:])
+	}
+	return ""
+}

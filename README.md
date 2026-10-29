@@ -20,9 +20,12 @@
 
 - **内置 JS 运行时**：用纯 Go 的 goja 跑书源脚本，放在原生核心里，
   Windows / Android / iOS 三端共用一份实现，不额外引入解释器进程。
-- **同步的 `java.*` 接口**：`java.ajax` / `get` / `post` 直接返回响应正文（Legado 的语义就是同步的），
-  另外实现了 `base64Encode/Decode`、`md5Encode(16)`、`put`/`get`、`getCookie`/`setCookie`/`removeCookie`、
-  `timeFormat`、`encodeURI`，以及 `source.getVariable`/`setVariable`（变量会随书源一起存盘）。
+- **同步的 `java.*` 接口**：`java.ajax` / `get` / `post` / `ajaxAll` 直接返回响应正文（Legado 的语义就是同步的），
+  另外实现了 `base64Encode/Decode`、`md5Encode(16)`、`digestHex`、`hexDecodeToString`、
+  `put`/`get`、`getCookie`/`setCookie`/`removeCookie`、`timeFormat`、`encodeURI`、`importScript`、
+  `androidId`/`deviceID`/`getWebViewUA`，以及 `source.getVariable`/`setVariable`（变量会随书源一起存盘）。
+  浏览器类交互接口（`startBrowserAwait` 等）本地没有 UI，返回空值不再让脚本报错。
+- **两种 JS 写法都认**：`规则@js:代码` 与 `规则<js>代码</js>`（块后面的内容忽略）。
 - **规则链语义对齐**：`规则@js:代码` 里的 `result` 是前置规则的取值；
   单写 `@js:` 时 `result` 是当前页正文（元素级规则则是该元素的 outerHTML）——
   书源里常见的 `JSON.parse(result)`、`result.match(...)` 都能直接工作。
@@ -37,8 +40,9 @@
 - 调试工具：`flutter test test/booksource_live_test.dart`（配 `LEGADO_LIVE=1`、`LEGADO_SOURCE`、
   `DUANJU_CORE_DLL`）会真去搜一本书、开目录、抓一章正文，用来验证整条链路。
 
-实测：源仓库抽 29 个近期书源，28 个含 JS，其中 19 个是不依赖 Java 类的纯 JS 源，
-这类现在能跑；「神文小说」「52 书库」等源搜索 → 详情 → 目录 → 正文全链路已跑通。
+实测：源仓库抽 29 个近期书源，28 个含 JS；其中 10 个要真 JVM（`Packages.java.*`）仍不可用，
+5 个搜索 → 详情 → 目录 → 正文全链路跑通（全本小说网、神文小说 ×2、52 书库、小原文学网），
+其余是站点本身 403 / 超时 / 依赖 jsoup（`org.jsoup.Jsoup.parse`）——jsoup 这类后面再补。
 
 ### 书源功能（0.7.68）
 

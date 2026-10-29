@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:duanju_app/novel/booksource/book_source.dart';
 import 'package:duanju_app/novel/booksource/book_source_engine.dart';
 import 'package:duanju_app/novel/booksource/book_source_parser.dart';
+import 'package:duanju_app/novel/booksource/book_source_rules.dart';
 import 'package:duanju_app/novel/booksource/rule_engine.dart';
 
 const _html = '''
@@ -178,6 +179,26 @@ void main() {
         () => RuleEngine.selectStrings('@xpath://div', ctx),
         throwsA(isA<UnsupportedRule>()),
       );
+    });
+
+    test('JS 规则支持 @js: 与 <js> 两种写法', () {
+      // 行内：前缀是取值规则，后面是脚本
+      final inline = BookSourceRules.splitJs('class.title@js:result.trim()')!;
+      expect(inline.prefix, 'class.title');
+      expect(inline.code, 'result.trim()');
+
+      // 块状：整条都是脚本，块后面的内容忽略
+      final block = BookSourceRules.splitJs('<js>return 1</js>class.title')!;
+      expect(block.prefix, '');
+      expect(block.code, 'return 1');
+
+      // 块状带前缀
+      final mixed = BookSourceRules.splitJs('class.item<js>result</js>')!;
+      expect(mixed.prefix, 'class.item');
+      expect(mixed.code, 'result');
+
+      expect(BookSourceRules.hasJs('class.item'), isFalse);
+      expect(BookSourceRules.hasJs('class.item<js>1</js>'), isTrue);
     });
   });
 

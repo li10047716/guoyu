@@ -20,10 +20,35 @@ class BookSourceRules {
   const BookSourceRules._();
 
   static const String _jsMark = '@js:';
+  static const String _jsOpen = '<js>';
 
   /// 规则里是否带 JS 段。
   static bool hasJs(String? rule) =>
-      rule != null && rule.contains(_jsMark);
+      rule != null && (rule.contains(_jsMark) || rule.contains(_jsOpen));
+
+  /// 拆分「前缀规则 + 脚本」。
+  ///
+  /// Legado 有两种写法，都要认：
+  /// - `规则@js:代码`（行内）
+  /// - `规则<js>代码</js>`（块状，块后面的内容忽略）
+  ///
+  /// 前缀为空表示整条规则就是脚本。
+  static ({String prefix, String code})? splitJs(String rule) {
+    final open = rule.indexOf(_jsOpen);
+    if (open >= 0) {
+      final close = rule.indexOf('</js>', open + _jsOpen.length);
+      final code = close < 0
+          ? rule.substring(open + _jsOpen.length)
+          : rule.substring(open + _jsOpen.length, close);
+      return (prefix: rule.substring(0, open), code: code);
+    }
+    final index = rule.indexOf(_jsMark);
+    if (index < 0) return null;
+    return (
+      prefix: rule.substring(0, index),
+      code: rule.substring(index + _jsMark.length),
+    );
+  }
 
   /// 求一个字符串。
   static Future<String> one(
@@ -73,9 +98,9 @@ class BookSourceRules {
       }
     }
 
-    final index = rule.indexOf(_jsMark);
-    final prefix = index <= 0 ? '' : rule.substring(0, index);
-    final code = rule.substring(index + _jsMark.length);
+    final split = splitJs(rule)!;
+    final prefix = split.prefix;
+    final code = split.code;
 
     // 没有前置规则时，`result` 就是当前上下文的原文（整页或元素 HTML），
     // 这和 Legado 的语义一致 —— 脚本里经常直接 JSON.parse(result)。

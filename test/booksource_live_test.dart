@@ -1,12 +1,16 @@
 /// 真实站点端到端验证（默认跳过，避免 CI 依赖外网）。
 ///
-/// 运行：
+/// 单个书源：
 ///   LEGADO_LIVE=1 LEGADO_SOURCE=/tmp/yc/7574.json \
 ///   DUANJU_CORE_DLL=E:/download/guoyu/windows/runner/duanju_core.dll \
 ///   flutter test test/booksource_live_test.dart
 ///
-/// 这条用例会真的去搜索、打开详情、抓一章正文，
-/// 用来确保「Dart 规则引擎 + Go goja 运行时」配合起来是通的。
+/// 整个目录（逐个跑「搜索 → 详情 → 目录 → 正文」，最后打印通过清单）：
+///   LEGADO_LIVE=1 LEGADO_DIR=/tmp/yc LEGADO_KEYWORD=诡秘之主 \
+///   DUANJU_CORE_DLL=E:/download/guoyu/windows/runner/duanju_core.dll \
+///   flutter test test/booksource_live_test.dart
+///
+/// 用来确认「Dart 规则引擎 + Go goja 运行时」配合起来是通的。
 library;
 
 import 'dart:io';
@@ -19,35 +23,107 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   final env = Platform.environment;
-  final path = env['LEGADO_SOURCE'] ?? '';
-  final live = env['LEGADO_LIVE'] == '1' && path.isNotEmpty && File(path).existsSync();
+  final single = env['LEGADO_SOURCE'] ?? '';
+  final dir = env['LEGADO_DIR'] ?? '';
+  final keyword = env['LEGADO_KEYWORD'] ?? '诡秘之主';
+  final live = env['LEGADO_LIVE'] == '1';
+  BookSourceStore.instance.debugSetDir(null);
 
-  test('自定义书源可以搜索、看目录、读正文', () async {
-    BookSourceStore.instance.debugSetDir(null);
-    final parsed = parseBookSources(
-      File(path).readAsStringSync(),
-      existing: const [],
-    );
-    expect(parsed.parsed, isNotEmpty);
-    final source = parsed.parsed.first;
-    expect(source.status.usable, isTrue,
-        reason: '源不可用：${source.statusDetail}');
-
+  /// 跑一遍完整链路，返回失败原因（成功返回 null）。
+  Future<String?> runFlow(BookSource source) async {
     const engine = BookSourceEngine();
-    final hits = await engine.search(source, '诡秘之主');
-    expect(hits, isNotEmpty, reason: '搜索没有结果');
-
+    final hits = await engine.search(source, keyword);
+    if (hits.isEmpty) return '搜索无结果';
     final book = await engine.detail(
       source,
       BookSourceIds.decode(hits.first.id)!.url,
     );
-    expect(book.chapters, isNotEmpty, reason: '目录为空');
-
+    if (book.chapters.isEmpty) return '目录为空';
     final text = await engine.content(
       source,
       book.novel.id,
       BookSourceIds.decode(book.chapters.first.id)!.url,
     );
-    expect(text.paragraphs, isNotEmpty, reason: '正文为空');
-  }, skip: live ? false : '需要 LEGADO_LIVE=1 与 LEGADO_SOURCE 才跑真实站点');
+    if (text.paragraphs.isEmpty) return '正文为空';
+    // ignore: avoid_print
+    print(
+      '  OK  ${source.name}：${hits.length} 本 → ${book.chapters.length} 章'
+      ' → ${text.paragraphs.length} 段',
+    );
+    return null;
+  }
+
+  test(
+    '自定义书源可以搜索、看目录、读正文',
+    () async {
+      if (!File(single).existsSync()) return;
+      final parsed = parseBookSources(
+        File(single).readAsStringSync(),
+        existing: const [],
+      );
+      expect(parsed.parsed, isNotEmpty);
+      final source = parsed.parsed.first;
+      expect(
+        source.status.usable,
+        isTrue,
+        reason: '源不可用：${source.statusDetail}',
+      );
+      final failure = await runFlow(source);
+      expect(failure, isNull, reason: failure ?? '');
+    },
+    skip: live && single.isNotEmpty
+        ? false
+        : '需要 LEGADO_LIVE=1 与 LEGADO_SOURCE',
+  );
+
+  test(
+    '整个目录的书源逐个实测',
+    () async {
+      final files =
+          Directory(dir)
+              .listSync()
+              .whereType<File>()
+              .where((f) => f.path.endsWith('.json'))
+              .toList()
+            ..sort((a, b) => a.path.compareTo(b.path));
+
+      final passed = <String>[];
+      final blocked = <String>[];
+      final failed = <String>[];
+
+      for (final file in files) {
+        final parsed = parseBookSources(
+          file.readAsStringSync(),
+          existing: const [],
+        );
+        for (final source in parsed.parsed) {
+          if (!source.status.usable) {
+            blocked.add('${source.name}（${source.status.label}）');
+            continue;
+          }
+          try {
+            final failure = await runFlow(source);
+            if (failure == null) {
+              passed.add(source.name);
+            } else {
+              failed.add('${source.name}：$failure');
+            }
+          } catch (e) {
+            failed.add('${source.name}：$e');
+          }
+        }
+      }
+
+      // ignore: avoid_print
+      print(
+        '\n===== 结果 =====\n'
+        '通过 ${passed.length}：${passed.join('、')}\n'
+        '不可用 ${blocked.length}：${blocked.join('、')}\n'
+        '跑不通 ${failed.length}：\n  ${failed.join('\n  ')}',
+      );
+      expect(passed, isNotEmpty);
+    },
+    timeout: const Timeout(Duration(minutes: 15)),
+    skip: live && dir.isNotEmpty ? false : '需要 LEGADO_LIVE=1 与 LEGADO_DIR',
+  );
 }
