@@ -1,10 +1,10 @@
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/detail_screen.dart';
-import 'package:duanju_app/downloads_screen.dart';
-import 'package:duanju_app/home_screen.dart';
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/playback_loader.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/ui/detail_screen.dart';
+import 'package:duanju_app/downloads/downloads_screen.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/player/playback_loader.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -190,7 +190,14 @@ void main() {
         await tester.tap(find.text('全选'));
         await tester.pumpAndSettle();
         expect(find.text('已选 VIP 集可能只能下载试看内容。'), findsOneWidget);
-        await tester.tap(find.text('仅非 VIP'));
+        // 0.7.27：三点菜单换成「全不选」，再手动挑回非 VIP 的 1、2 集。
+        await tester.tap(find.text('全不选'));
+        await tester.pumpAndSettle();
+        expect(find.text('已选 VIP 集可能只能下载试看内容。'), findsNothing);
+        expect(find.text('加入下载 · 0 集'), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('download-episode-1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('download-episode-2')));
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const ValueKey('download-quality')));
         await tester.pumpAndSettle();
@@ -318,12 +325,12 @@ void main() {
           child: HomeScreen(
             repository: repository,
             store: await makeStore(),
-            initialTab: 1,
+            initialTab: 0,
           ),
         ),
       );
       await tester.pumpAndSettle();
-      focusRemote(tester, find.byKey(const ValueKey('tv-nav-4')));
+      focusRemote(tester, find.byKey(const ValueKey('tv-nav-3')));
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();

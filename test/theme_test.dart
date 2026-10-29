@@ -1,12 +1,12 @@
 import 'dart:convert';
 
-import 'package:duanju_app/app_bottom_navigation.dart';
-import 'package:duanju_app/app_theme.dart';
-import 'package:duanju_app/home_screen.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/ui/app_bottom_navigation.dart';
+import 'package:duanju_app/ui/app_theme.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/settings_screen.dart';
-import 'package:duanju_app/vertical_feed_screen.dart';
+import 'package:duanju_app/ui/settings_screen.dart';
+import 'package:duanju_app/player/vertical_feed_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,7 +35,7 @@ void main() {
     'theme survives restart and backup, with compatible old backups',
     () async {
       final store = await localStore();
-      expect(store.themeMode, 'system');
+      expect(store.themeMode, 'dark');
       await store.setThemeMode('light');
       final restored = LocalStore(store.preferences);
       expect(restored.themeMode, 'light');
@@ -47,6 +47,7 @@ void main() {
       old.remove('themeMode');
       await store.setThemeMode('system');
       await store.importBackup(jsonEncode(old));
+      // 备份里没有 themeMode 时不会覆盖当前值（仍是 system）。
       expect(store.themeMode, 'system');
       old['themeMode'] = 'invalid';
       await expectLater(
@@ -60,7 +61,7 @@ void main() {
   );
 
   testWidgets(
-    'default theme follows the system from bootstrap through browsing',
+    'default theme is dark, and system mode still follows the platform',
     (tester) async {
       phone(tester);
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
@@ -68,21 +69,31 @@ void main() {
       tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
       await tester.pumpWidget(DuanjuApp(repository: repository));
       await tester.pump();
+      // 0.7.38：默认深色（深空 Glass Noir 是主视觉）。
       expect(
         tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
-        ThemeMode.system,
+        ThemeMode.dark,
       );
       final store = await localStore();
       await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
       await tester.pumpAndSettle();
+      // 默认深色：系统切到浅色也不跟着变。
       for (final brightness in [Brightness.dark, Brightness.light]) {
         tester.platformDispatcher.platformBrightnessTestValue = brightness;
         await tester.pumpAndSettle();
         expect(
           Theme.of(tester.element(find.byType(HomeScreen))).brightness,
-          brightness,
+          Brightness.dark,
         );
       }
+      // 用户显式选「跟随系统」时才跟随平台。
+      await store.setThemeMode('system');
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+      await tester.pumpAndSettle();
+      expect(
+        Theme.of(tester.element(find.byType(HomeScreen))).brightness,
+        Brightness.light,
+      );
       await store.setThemeMode('dark');
       await tester.pumpAndSettle();
       expect(
@@ -103,6 +114,8 @@ void main() {
     final repository = FixtureRepository();
     await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
     await tester.pumpAndSettle();
+    // 0.7.33 起「找剧」成为独立标签页，追剧排在 index 2（与本用例后面对
+    // selectedIndex == 2 的断言一致）。
     await tester.tap(find.byKey(const ValueKey('bottom-nav-2')));
     await tester.pumpAndSettle();
     expect(find.text('我的追剧'), findsOneWidget);

@@ -1,5 +1,5 @@
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/models.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/models.dart';
 
 class FixtureRepository extends AppRepository {
   int detailCalls = 0;
@@ -16,8 +16,8 @@ class FixtureRepository extends AppRepository {
     category: '合成数据',
   );
   static const vip = Drama(
-    id: 'huangdou:200',
-    source: 'huangdou',
+    id: 'sorani:200',
+    source: 'sorani',
     title: '会员测试剧',
     episodes: 4,
     vip: true,

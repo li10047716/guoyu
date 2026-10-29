@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/source_status.dart';
-import 'package:duanju_app/sources_screen.dart';
+import 'package:duanju_app/core/local_profiles.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/catalog/source_status.dart';
+import 'package:duanju_app/catalog/sources_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -106,7 +106,15 @@ void main() {
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'profiles': jsonEncode([
-          const LocalProfile(id: 'default', name: '管理员', admin: true).toJson(),
+          // 多用户配置要求管理员带 PIN，否则 LocalStore 会判定配置无效。
+          const LocalProfile(
+            id: 'default',
+            name: '管理员',
+            admin: true,
+            salt: '11111111111111111111111111111111',
+            pinHash:
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          ).toJson(),
           const LocalProfile(
             id: 'viewer',
             name: '只看红果',

@@ -1,8 +1,8 @@
 import 'dart:async';
 
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/source_status.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/catalog/source_status.dart';
 
 import 'fixtures.dart';
 

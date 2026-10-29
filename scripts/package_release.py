@@ -39,29 +39,45 @@ if options.platform == 'android':
         artifacts.append(target)
 else:
     bundle = root / 'build' / 'windows' / 'x64' / 'runner' / 'Release'
-    required = ['zhenguojian.exe', 'duanju_core.dll', 'flutter_windows.dll', 'libffmpegkit.dll',
+    required = [variant.executable, 'duanju_core.dll', 'flutter_windows.dll', 'libffmpegkit.dll',
                 'libmpv-2.dll', 'msvcp140.dll', 'vcruntime140.dll',
                 'data/icudtl.dat', 'data/app.so']
     missing = [name for name in required if not (bundle / name).is_file()]
     if missing:
         raise SystemExit('Windows 安装包缺少文件：' + ', '.join(missing))
-    target = output / f'{variant.slug}-{version}-windows-x64.zip'
-    with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for source in sorted(bundle.rglob('*')):
-            if source.is_file():
-                relative = source.relative_to(bundle).as_posix()
-                if relative == 'zhenguojian.exe':
-                    relative = variant.slug + '.exe'
-                archive.write(source, relative)
-                print('  ' + relative)
+    # 0.7.43（用户要求）：不再生成 zip，直接覆盖绿色目录 dist/windows/<slug>/。
+    target = output / variant.slug
+    shutil.copytree(bundle, target, dirs_exist_ok=True)
+    print('  覆盖 ' + str(target))
     artifacts.append(target)
 
 checksums = []
 for artifact in sorted(output.glob(f'*-{version}-*')):
+    if not artifact.is_file():
+        continue
     digest = hashlib.sha256()
     with artifact.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     checksums.append(f'{digest.hexdigest()}  {artifact.name}')
     print(artifact)
+
+# 0.7.61：Windows 侧是绿色目录 `dist/windows/<slug>/`，文件名不带版本号，
+# 上面的 glob 一条也匹配不到，最后会写出一个只有换行符的空校验文件。
+# 这里对目录逐文件生成校验和（相对路径），与旧 zip 时代的行为对齐。
+for directory in sorted(p for p in output.glob('*') if p.is_dir()):
+    if not (directory / variant.executable).is_file():
+        continue
+    for item in sorted(directory.rglob('*')):
+        if not item.is_file():
+            continue
+        digest = hashlib.sha256()
+        with item.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        checksums.append(
+            f'{digest.hexdigest()}  {item.relative_to(output).as_posix()}'
+        )
+
 (output / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='ascii')
+print(f'校验和条目：{len(checksums)}')

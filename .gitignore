@@ -1,5 +1,6 @@
 .dart_tool/
 .flutter-plugins*
+.plugin_symlinks/
 .pub-cache/
 build/
 dist/
@@ -28,6 +29,9 @@ venv/
 !.env.example
 !.env.sample
 !.env.template
+capture-out/
+.workbuddy/
+*.har
 *.p12
 *.pfx
 ios/Pods/

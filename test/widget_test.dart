@@ -1,7 +1,7 @@
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/app_build.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/core/app_build.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,25 +26,21 @@ void main() {
       final local = await store();
       await tester.pumpWidget(DuanjuApp(repository: repository, store: local));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('VIP：隐藏'), findsNothing);
+      // 0.7.48：VIP 标记原本只由黄豆站源产生，黄豆移除后没有任何站源会给出
+      // VIP 标记，VIP 过滤入口随之收起（本地旧开关保留，只是不再渲染）。
+      expect(find.textContaining('VIP：'), findsNothing);
       expect(find.text('测试短剧'), findsOneWidget);
       if (allSourcesEnabled) {
         await tester.tap(find.byKey(const ValueKey('source-switch')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('黄豆'));
+        await tester.tap(find.text('青空次元'));
         await tester.pumpAndSettle();
-        expect(find.text('会员测试剧'), findsNothing);
-        expect(find.byTooltip('VIP：隐藏'), findsOneWidget);
-        await tester.tap(find.byTooltip('VIP：隐藏'));
-        await tester.pumpAndSettle();
-        expect(find.byTooltip('VIP：显示'), findsOneWidget);
         expect(find.text('会员测试剧'), findsOneWidget);
-        await tester.tap(find.byTooltip('VIP：显示'));
-        await tester.pumpAndSettle();
+        expect(find.textContaining('VIP：'), findsNothing);
       } else {
-        expect(find.text('黄豆'), findsNothing);
+        expect(find.text('青空次元'), findsNothing);
+        expect(find.text('会员测试剧'), findsNothing);
       }
-      expect(find.text('会员测试剧'), findsNothing);
       await tester.tap(find.text('测试短剧'));
       await tester.pumpAndSettle();
       expect(repository.detailCalls, 1);
@@ -76,7 +72,7 @@ void main() {
       }
       await local.clearHistory();
       await tester.pumpAndSettle();
-      expect(find.text('立即播放'), findsOneWidget);
+      expect(find.byKey(const ValueKey('episode-1')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   }

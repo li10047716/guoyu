@@ -140,8 +140,15 @@ func (manager *nativeDownloads) load() error {
 			return errors.New("下载记录状态无效，原索引和文件已保留")
 		}
 	}
+	dropped := false
 	for _, record := range records {
 		record.Drama = migrateNativeDrama(record.Drama)
+		// 站源已从应用中移除：记录与索引一起丢弃（本地已下载的媒体文件不主动删除）。
+		if !nativeKnownDownload(record.nativeDownloadJob) {
+			dropped = true
+			continue
+		}
+		// 站源仍存在、只是当前版本未启用：保留记录但不出现在列表里。
 		if !nativeDownloadAvailable(record.nativeDownloadJob) {
 			manager.jobs[record.ID] = record
 			continue
@@ -160,6 +167,9 @@ func (manager *nativeDownloads) load() error {
 			continue
 		}
 		manager.jobs[record.ID] = record
+	}
+	if dropped {
+		return manager.saveLocked()
 	}
 	return nil
 }

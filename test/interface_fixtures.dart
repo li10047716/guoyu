@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:duanju_app/models.dart';
+import 'package:duanju_app/core/models.dart';
 
 import 'fixtures.dart';
 

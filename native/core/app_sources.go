@@ -34,7 +34,6 @@ type nativeSourceRecord struct {
 }
 
 type nativeSourceStatus struct {
-	UnknownVIP   int                 `json:"unknownVip"`
 	Source       string              `json:"source"`
 	Count        int                 `json:"count"`
 	Page         int                 `json:"page"`
@@ -87,7 +86,7 @@ func (engine *nativeEngine) loadSourceRecords() {
 		return
 	}
 	for source, record := range records {
-		if !isHuangguoProviderSource(source) {
+		if !isSupportedProviderSource(source) {
 			continue
 		}
 		if record.Running {
@@ -134,18 +133,10 @@ func (engine *nativeEngine) sourceStatusLocked(source string) nativeSourceStatus
 	state, found := engine.catalogStates[source]
 	warning := engine.storageWarningLocked()
 	stage := record.Stage
-	unknownVIP := 0
-	if source == sourceHuangdou {
-		for _, drama := range engine.catalogs[source] {
-			if drama.VIP == nil {
-				unknownVIP++
-			}
-		}
-	}
 	if warning != "" && !record.Running && stage == "已完成" {
 		stage = "等待保存"
 	}
-	return nativeSourceStatus{Source: source, Count: len(engine.catalogs[source]), UnknownVIP: unknownVIP, Page: max(1, state.Page), HasMore: !found || state.HasMore,
+	return nativeSourceStatus{Source: source, Count: len(engine.catalogs[source]), Page: max(1, state.Page), HasMore: !found || state.HasMore,
 		UpdatedAt: state.UpdatedAt, Operation: record.Operation, Running: record.Running, Stage: stage,
 		Completed: record.Completed, Total: record.Total, Added: record.Added, Error: record.Error,
 		StorageError: warning,
@@ -170,12 +161,9 @@ func (engine *nativeEngine) startSourceTask(source, operation string, drama nati
 		return nativeSourceStatus{}, errNativeBuildSource
 	}
 	switch operation {
-	case "update", "more", "metadata", "vipMetadata", "check", "checkCatalog", "retrySave":
+	case "update", "more", "metadata", "check", "checkCatalog", "retrySave":
 	default:
 		return nativeSourceStatus{}, errors.New("无效的站源操作")
-	}
-	if operation == "vipMetadata" && source != sourceHuangdou {
-		return nativeSourceStatus{}, errors.New("当前站源不需要补齐 VIP 资料")
 	}
 	if drama.ID != "" && (!nativeDramaAvailable(drama) || sourceFromDramaID(drama.ID) != source) {
 		return nativeSourceStatus{}, errNativeBuildSource
@@ -260,7 +248,7 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 				// 因此这里不再标记为"未完成/错误"，而是标记为"可继续"，
 				// 由前端在检测到 hasMore 时自动发起下一批。
 				record.Stage = "可继续更新"
-				// 0.6.11 修正（用户反馈"黄剧源会出现更新已到时间上限，已保存进度，
+				// 0.6.11 修正（用户反馈"站源会出现更新已到时间上限，已保存进度，
 				// 怎么回事，是更新超时吗"）：
 				//
 				// 原文案"本次更新已到时间上限，已保存进度"写在 `record.Error` 里，
@@ -345,16 +333,13 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 		if len(pending) >= 8 {
 			break
 		}
-		if operation == "vipMetadata" && drama.VIP != nil {
-			continue
-		}
-		if operation != "vipMetadata" && time.Since(record.MetadataChecked[drama.ID]) < 24*time.Hour {
+		if time.Since(record.MetadataChecked[drama.ID]) < 24*time.Hour {
 			continue
 		}
 		if time.Now().Before(record.MetadataRetryAt[drama.ID]) {
 			continue
 		}
-		if operation == "metadata" || operation == "vipMetadata" || drama.Episodes <= 0 || drama.Description == "" || source == sourceHuangdou && drama.VIP == nil {
+		if operation == "metadata" || drama.Episodes <= 0 || drama.Description == "" {
 			pending = append(pending, drama)
 		}
 		// 分批大小（0.2.26 下调）：原先为 8 部/批。
@@ -377,14 +362,12 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 			return ctx.Err()
 		}
 		result, err := engine.nativeDetail(ctx, drama)
-		unknownVIP := false
 		if err == nil {
 			fresh := result.(map[string]any)["drama"].(nativeDrama)
 			var metadataErr error
 			if nativeNeedsExtraMetadata(fresh) {
 				fresh, metadataErr = engine.nativeExtraMetadata(ctx, fresh)
 			}
-			unknownVIP = source == sourceHuangdou && fresh.VIP == nil
 			engine.mu.Lock()
 			engine.catalogs[source] = mergeNativeCatalog(engine.catalogs[source], []nativeDrama{fresh})
 			for key, items := range engine.catalogs {
@@ -412,12 +395,6 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 				}
 				record.MetadataChecked[drama.ID] = time.Now()
 				delete(record.MetadataRetryAt, drama.ID)
-				if unknownVIP {
-					if record.MetadataRetryAt == nil {
-						record.MetadataRetryAt = map[string]time.Time{}
-					}
-					record.MetadataRetryAt[drama.ID] = time.Now().Add(5 * time.Minute)
-				}
 			} else if ctx.Err() == nil {
 				if record.MetadataRetryAt == nil {
 					record.MetadataRetryAt = map[string]time.Time{}

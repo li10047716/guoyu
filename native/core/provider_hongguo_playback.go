@@ -14,9 +14,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
-const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
+const (
+	hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
+	// 0.7.39：该接口所在 CDN（Server: Xcdn）的 443 端口已不再协商 ALPN，
+	// Go / curl / openssl 一律收到 tls alert 120（no_application_protocol），
+	// 而 80 端口能正常返回加密响应。https 失败后立刻用明文同一路径重试。
+	hongguoPlaybackAPIPlain = "http://djapi.999888456.xyz/api/hongguo/play"
+)
 
 var hongguoNumericID = regexp.MustCompile(`^[0-9]{1,32}$`)
 
@@ -50,7 +57,7 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 		return providerMedia{}, err
 	}
 	query := url.Values{"id": {base64.StdEncoding.EncodeToString(reference)}}
-	body, err := d.fetchProviderText(ctx, hongguoPlaybackAPI+"?"+query.Encode(), hongguoBaseURL+"/")
+	body, err := d.fetchHongguoPlaybackBody(ctx, query.Encode())
 	if err != nil {
 		return providerMedia{}, err
 	}
@@ -104,6 +111,32 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 		return providerMedia{}, keyErr
 	}
 	return providerMedia{}, errors.New("红果备用播放接口未返回该集可用的媒体和密钥，请稍后重试或确认该集是否仍可访问")
+}
+
+// fetchHongguoPlaybackBody 依次尝试 https / http 端点取回加密响应。
+//
+// 单个端点只请求一次：这里的失败是 CDN 的 TLS 层拒绝，
+// 同一协议重试没有意义，换协议才有用（也避免 3 次退避白等 3 秒）。
+func (d *Downloader) fetchHongguoPlaybackBody(ctx context.Context, query string) (string, error) {
+	var lastErr error
+	for _, endpoint := range []string{hongguoPlaybackAPI, hongguoPlaybackAPIPlain} {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		target := endpoint + "?" + query
+		body, err := d.fetchProviderTextTimeout(ctx, target, target, hongguoBaseURL+"/", 10*time.Second)
+		if err == nil && strings.TrimSpace(body) != "" {
+			return body, nil
+		}
+		if err == nil {
+			err = errors.New("红果备用播放接口返回了空响应")
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("红果备用播放接口无法访问")
+	}
+	return "", lastErr
 }
 
 func decodeHongguoPlaybackResponse(body string) ([]byte, error) {

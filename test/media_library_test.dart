@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/media_library.dart';
-import 'package:duanju_app/media_pipeline.dart';
-import 'package:duanju_app/models.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/downloads/media_library.dart';
+import 'package:duanju_app/downloads/media_pipeline.dart';
+import 'package:duanju_app/core/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';

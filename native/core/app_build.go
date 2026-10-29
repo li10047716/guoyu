@@ -8,7 +8,7 @@ var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
-	return source == sourceHongguo || buildAllSources == "true" && isHuangguoProviderSource(source)
+	return source == sourceHongguo || buildAllSources == "true" && isSupportedProviderSource(source)
 }
 
 func nativeDramaAvailable(drama nativeDrama) bool {
@@ -33,6 +33,22 @@ func nativeChapterAvailable(drama nativeDrama, chapter Chapter) bool {
 
 func nativeDownloadAvailable(job nativeDownloadJob) bool {
 	return nativeChapterAvailable(job.Drama, job.Chapter)
+}
+
+// nativeKnownDrama 判断剧集所属站源是否仍在本应用的站源清单里。
+//
+// 与 nativeDramaAvailable 的区别：它只看站源**是否还存在**，不看当前版本**是否启用**。
+// 单站源版本里其它站源的剧集不可用，但仍属于已知站源，本地记录应当保留；
+// 只有清单里已被移除的站源（如历史上的黄豆 / 黄剧 / 黄果系列）才彻底丢弃。
+func nativeKnownDrama(drama nativeDrama) bool {
+	source, _, valid := splitProviderDramaID(drama.ID)
+	return valid && isSupportedProviderSource(source) &&
+		(drama.Source == "" || canonicalProviderSource(drama.Source) == source)
+}
+
+// nativeKnownDownload 判断下载记录是否属于仍存在的站源。
+func nativeKnownDownload(job nativeDownloadJob) bool {
+	return nativeKnownDrama(job.Drama)
 }
 
 func nativeAuthorizeInput(input nativeInput) error {

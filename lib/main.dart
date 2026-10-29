@@ -8,18 +8,22 @@ import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'core_bridge.dart';
-import 'app_layout.dart';
-import 'app_splash.dart';
-import 'app_theme.dart';
-import 'app_updater.dart';
-import 'home_screen.dart';
-import 'local_store.dart';
-import 'profiles_screen.dart';
-import 'media_library.dart';
-import 'package_smoke.dart';
-import 'lan_controller.dart';
-import 'vertical_feed_screen.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/ui/app_layout.dart';
+import 'package:duanju_app/ui/app_splash.dart';
+import 'package:duanju_app/ui/app_theme.dart';
+import 'package:duanju_app/ui/launch_video.dart';
+import 'package:duanju_app/platform/app_updater.dart';
+import 'package:duanju_app/platform/brand_migration.dart';
+import 'package:duanju_app/platform/desktop_title_bar.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/ui/profiles_screen.dart';
+import 'package:duanju_app/downloads/media_library.dart';
+import 'package:duanju_app/core/package_smoke.dart';
+import 'package:duanju_app/lan/lan_controller.dart';
+import 'package:duanju_app/player/vertical_feed_screen.dart';
+import 'package:duanju_app/ui/widgets.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,13 +32,26 @@ Future<void> main(List<String> arguments) async {
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
   }
   if (Platform.isWindows) {
+    // 0.7.43（用户要求）：隐藏系统标题栏，最小化/最大化/关闭改用应用内按钮
+    // （DesktopTitleBar）。
+    // 注意 ensureInitialized 不能省：插件靠它拿到根窗口句柄（native_window），
+    // 缺了它后续所有窗口调用都在空句柄上打转（实测 getSize 直接抛空指针）。
     await windowManager.ensureInitialized();
+    await windowManager.waitUntilReadyToShow(
+      const WindowOptions(titleBarStyle: TitleBarStyle.hidden),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+      },
+    );
   }
   MediaKit.ensureInitialized();
   if (Platform.isWindows && arguments.firstOrNull == '--package-smoke') {
     await runPackageSmoke(arguments);
     return;
   }
+  // 0.7.34 改名「果屿」：本地数据目录随之变化，必须赶在任何本地存储被读取之前搬完。
+  await migrateLegacyBrandData();
   runApp(const AppBootstrap());
 }
 
@@ -49,8 +66,15 @@ class _AppBootstrapState extends State<AppBootstrap>
   final repository = NativeRepository();
   final navigator = GlobalKey<NavigatorState>();
 
-  /// 首页是否已拿到第一批可播放视频（控制开屏页淡出）。
+  /// 开屏页就绪信号（控制开屏页淡出）。
+  ///
+  /// 0.7.21：首页竖滑流入口已移除，不再等待"第一批可播放视频"；
+  /// 主界面首帧渲染完成即视为就绪（最短展示时长仍由开屏页保证）。
   final _feedReady = ValueNotifier<bool>(false);
+
+  /// 开屏视频（0.7.54）。media_kit 的生命周期在这里管理，
+  /// 测试环境（FLUTTER_TEST）里 LaunchVideo 会自动按"无视频"处理。
+  LaunchVideo? _launchVideo;
 
   LocalStore? store;
   Object? error;
@@ -60,6 +84,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _feedReady.dispose();
+    _launchVideo?.dispose();
     LanController.current?.dispose();
     LanController.current = null;
     MediaLibrary.current?.dispose();
@@ -72,6 +97,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _launchVideo = LaunchVideo('assets/branding/app_launch.mp4');
     _initialize();
   }
 
@@ -190,6 +216,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     version: device.version,
     navigatorKey: navigator,
     feedReady: _feedReady,
+    launchVideo: _launchVideo,
   );
 }
 
@@ -203,8 +230,8 @@ class DuanjuApp extends StatelessWidget {
     this.television = false,
     this.version = appVersion,
     this.navigatorKey,
-    this.feedPlayerFactory,
     this.feedReady,
+    this.launchVideo,
   });
   final AppRepository repository;
   final LocalStore? store;
@@ -214,11 +241,12 @@ class DuanjuApp extends StatelessWidget {
   final String version;
   final GlobalKey<NavigatorState>? navigatorKey;
 
-  /// 测试用：注入首页假播放器。
-  final Player Function()? feedPlayerFactory;
-
-  /// 首页是否已就绪（控制开屏页）。为空时不开开屏页（如测试）。
+  /// 主界面是否已就绪（控制开屏页）。为空时不开开屏页（如测试）。
   final ValueNotifier<bool>? feedReady;
+
+  /// 开屏视频（0.7.54）。生命周期归 [_AppBootstrapState] 管理，
+  /// 这里只把信号转发给 [AppSplash]。
+  final LaunchVideo? launchVideo;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -230,41 +258,54 @@ class DuanjuApp extends StatelessWidget {
     navigatorKey: navigatorKey,
     title: appName,
     debugShowCheckedModeBanner: false,
+    // 0.7.28（用户要求）：桌面端也能"按住界面往下拖"来刷新/滚动。
+    // Flutter 默认把鼠标排除在可拖拽设备之外，这里放开。
+    scrollBehavior: const AppScrollBehavior(),
     locale: const Locale('zh', 'CN'),
     supportedLocales: const [Locale('zh', 'CN')],
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     theme: AppTheme.light,
     darkTheme: AppTheme.dark,
-    themeMode: AppTheme.mode(store?.themeMode ?? 'system'),
+    themeMode: AppTheme.mode(store?.themeMode ?? 'dark'),
     builder: (context, child) {
       final mode = store?.displayMode ?? 'auto';
       final tv = mode == 'television' || mode == 'auto' && television;
       final theme = Theme.of(context);
+      final content = AppLayout(
+        television: tv,
+        version: version,
+        child: Theme(
+          data: tv ? televisionTheme(theme) : theme,
+          child: Shortcuts(
+            shortcuts: const {
+              SingleActivator(
+                LogicalKeyboardKey.select,
+                includeRepeats: false,
+              ): ActivateIntent(),
+              SingleActivator(
+                LogicalKeyboardKey.gameButtonA,
+                includeRepeats: false,
+              ): ActivateIntent(),
+              SingleActivator(LogicalKeyboardKey.goBack): DismissIntent(),
+            },
+            child: FocusTraversalGroup(child: child!),
+          ),
+        ),
+      );
       return AnnotatedRegion<SystemUiOverlayStyle>(
         value: AppTheme.systemBars(theme.brightness),
         child: ColoredBox(
           color: theme.scaffoldBackgroundColor,
-          child: AppLayout(
-            television: tv,
-            version: version,
-            child: Theme(
-              data: tv ? televisionTheme(theme) : theme,
-              child: Shortcuts(
-                shortcuts: const {
-                  SingleActivator(
-                    LogicalKeyboardKey.select,
-                    includeRepeats: false,
-                  ): ActivateIntent(),
-                  SingleActivator(
-                    LogicalKeyboardKey.gameButtonA,
-                    includeRepeats: false,
-                  ): ActivateIntent(),
-                  SingleActivator(LogicalKeyboardKey.goBack): DismissIntent(),
-                },
-                child: FocusTraversalGroup(child: child!),
-              ),
-            ),
-          ),
+          // 0.7.43（用户要求）：Windows 隐藏系统标题栏后，应用内标题栏
+          // （DesktopTitleBar）放在所有页面之上，窗口按钮与拖动全局可用。
+          child: Platform.isWindows
+              ? Column(
+                  children: [
+                    const DesktopTitleBar(),
+                    Expanded(child: content),
+                  ],
+                )
+              : content,
         ),
       );
     },
@@ -278,10 +319,6 @@ class DuanjuApp extends StatelessWidget {
                     ),
                     repository: repository,
                     store: store!,
-                    feedPlayerFactory: feedPlayerFactory,
-                    onFeedReady: feedReady == null
-                        ? null
-                        : () => feedReady!.value = true,
                   ),
                 )
         : Scaffold(
@@ -293,7 +330,7 @@ class DuanjuApp extends StatelessWidget {
                   children: [
                     const Icon(
                       Icons.play_circle_fill_rounded,
-                      color: Color(0xFFFF765F),
+                      color: AppTheme.starlight,
                       size: 72,
                     ),
                     const SizedBox(height: 24),
@@ -317,12 +354,22 @@ class DuanjuApp extends StatelessWidget {
           ),
   );
 
-  /// 用开屏页盖住主界面，等首页有视频可播后再淡出。
+  /// 用开屏页盖住主界面，等主界面首帧就绪后淡出。
   ///
   /// 测试或未注入就绪信号时直接返回主界面（不显示开屏页）。
   Widget _withSplash(Widget child) {
     final ready = feedReady;
     if (ready == null) return child;
-    return AppSplash(ready: ready, child: child);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!ready.value) ready.value = true;
+    });
+    // 0.7.54：开屏改为播放 assets/branding/app_launch.mp4（media_kit），
+    // 播完才放行首页；视频加载失败自动回退到纯绘制场景。
+    return AppSplash(
+      ready: ready,
+      videoLayer: launchVideo?.layer,
+      videoDone: launchVideo?.done,
+      child: child,
+    );
   }
 }

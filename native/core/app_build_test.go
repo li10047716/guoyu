@@ -12,7 +12,7 @@ import (
 )
 
 func TestNativeBuildAuthorization(t *testing.T) {
-	for _, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoVideo, sourceHuangguoAI, sourceCloudFront, "unknown"} {
+	for _, source := range []string{sourceHongguo, sourceSorani, sourceHanxiaoquan, "unknown"} {
 		allowed := source == sourceHongguo || buildAllSources == "true" && source != "unknown"
 		for _, action := range []string{"catalog", "cached", "sourceStatus", "sourceJob", "cancelSourceJob", "detail", "cover", "resolve", "enqueueDownloads", "localPlayback"} {
 			input := nativeInput{Action: action, Source: source, Drama: nativeDrama{ID: source + ":123", Source: source}}
@@ -23,9 +23,9 @@ func TestNativeBuildAuthorization(t *testing.T) {
 		}
 	}
 	for _, input := range []nativeInput{
-		{Action: "resolve", Drama: nativeDrama{ID: "huangdou:123", Source: sourceHongguo}},
-		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{Source: sourceHuangdou}},
-		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{ID: "huangdou:123:1"}},
+		{Action: "resolve", Drama: nativeDrama{ID: "sorani:123", Source: sourceHongguo}},
+		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{Source: sourceSorani}},
+		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{ID: "sorani:123:1"}},
 	} {
 		if !errors.Is(nativeAuthorizeInput(input), errNativeBuildSource) {
 			t.Fatal("mismatched source passed native authorization")
@@ -33,16 +33,18 @@ func TestNativeBuildAuthorization(t *testing.T) {
 	}
 	manager := downloadTestManager(t)
 	input := downloadTestInput(1)
-	input.Entries[0].Chapter.Source = sourceHuangdou
+	input.Entries[0].Chapter.Source = sourceSorani
 	if _, err := manager.enqueue(input); !errors.Is(err, errNativeBuildSource) {
 		t.Fatalf("mismatched download source accepted: %v", err)
 	}
 }
 
-func TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling(t *testing.T) {
+func TestNativeBuildPreservesEditionRecordsAndDropsRemovedSources(t *testing.T) {
 	manager := downloadTestManager(t)
+	// 三条记录：当前版本可用（红果）、已知但本版本未启用（青空次元）、
+	// 站源已从应用中移除（huangdou）。
 	records := []*nativeDownloadRecord{}
-	for index, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoVideo, sourceHuangguoAI, sourceCloudFront} {
+	for index, source := range []string{sourceHongguo, sourceSorani, "huangdou"} {
 		drama := nativeDrama{ID: source + ":123", Source: source, Title: "合成下载"}
 		record := &nativeDownloadRecord{nativeDownloadJob: nativeDownloadJob{
 			ID: nativeDownloadID(drama.ID, 1), Drama: drama, Index: 1,
@@ -60,15 +62,15 @@ func TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling(t *tes
 	reopened := newNativeDownloads(manager.engine)
 	t.Cleanup(reopened.close)
 	jobs, err := reopened.snapshot()
-	expected := 1
-	if buildAllSources == "true" {
-		expected = 5
-	}
-	if err != nil || len(jobs) != expected {
+	if err != nil || len(jobs) != 1 {
 		t.Fatalf("wrong visible downloads: %v, %v", jobs, err)
 	}
-	if len(reopened.jobs) != len(records) {
-		t.Fatal("changing edition discarded saved downloads")
+	// 已移除站源的记录被丢弃，本版本未启用的已知站源记录仍留在内存与磁盘上。
+	if len(reopened.jobs) != len(records)-1 {
+		t.Fatalf("wrong kept downloads after source removal: %d", len(reopened.jobs))
+	}
+	if reopened.jobs[records[2].ID] != nil {
+		t.Fatal("removed source download survived")
 	}
 	started := make(chan string, 4)
 	reopened.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
@@ -79,12 +81,8 @@ func TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling(t *tes
 	if err := reopened.control("", "resumeAll"); err != nil {
 		t.Fatal(err)
 	}
-	workers := 1
-	if buildAllSources == "true" {
-		workers = 2
-	}
 	seen := map[string]bool{}
-	for index := 0; index < workers; index++ {
+	for index := 0; index < 1; index++ {
 		select {
 		case source := <-started:
 			seen[source] = true
@@ -92,42 +90,47 @@ func TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling(t *tes
 			t.Fatal("allowed download did not start")
 		}
 	}
-	if !seen[sourceHongguo] || buildAllSources == "true" && !seen[sourceHuangdou] {
+	if !seen[sourceHongguo] {
 		t.Fatalf("wrong sources scheduled: %v", seen)
 	}
-	if buildAllSources != "true" {
+	{
 		reopened.mu.Lock()
 		active := len(reopened.active)
 		reopened.mu.Unlock()
 		if active != 1 {
 			t.Fatal("foreign-source task was scheduled")
 		}
-		for _, record := range records[1:] {
-			if err := reopened.control(record.ID, "remove"); !errors.Is(err, errNativeBuildSource) {
-				t.Fatalf("foreign task could be removed: %v", err)
-			}
-			if _, _, err := reopened.localPlan(record.Drama.ID, 1); !errors.Is(err, errNativeBuildSource) {
-				t.Fatalf("foreign task could be played: %v", err)
-			}
+		foreign := records[1]
+		if err := reopened.control(foreign.ID, "remove"); !errors.Is(err, errNativeBuildSource) {
+			t.Fatalf("foreign task could be removed: %v", err)
+		}
+		if _, _, err := reopened.localPlan(foreign.Drama.ID, 1); !errors.Is(err, errNativeBuildSource) {
+			t.Fatalf("foreign task could be played: %v", err)
 		}
 	}
 	if err := reopened.control("", "pauseAll"); err != nil {
 		t.Fatal(err)
 	}
 	reopened.close()
-	if buildAllSources != "true" {
-		for _, original := range records[1:] {
-			if !reflect.DeepEqual(reopened.jobs[original.ID], original) {
-				t.Fatal("hidden download changed during bulk operations")
-			}
+	{
+		// 载入时会对剧集做一次 migrateNativeDrama，比较前先对齐这份迁移结果。
+		expected := *records[1]
+		expected.Drama = migrateNativeDrama(expected.Drama)
+		if !reflect.DeepEqual(reopened.jobs[records[1].ID], &expected) {
+			t.Fatal("hidden download changed during bulk operations")
 		}
 		stored, err := os.ReadFile(filepath.Join(reopened.root, "index.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var saved []nativeDownloadRecord
-		if err := json.Unmarshal(stored, &saved); err != nil || len(saved) != 5 {
+		if err := json.Unmarshal(stored, &saved); err != nil || len(saved) != len(records)-1 {
 			t.Fatalf("saved hidden downloads lost: %v", err)
+		}
+		for _, record := range saved {
+			if record.Drama.Source == "huangdou" {
+				t.Fatal("removed source download was written back")
+			}
 		}
 	}
 }

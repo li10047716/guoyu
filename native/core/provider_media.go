@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -25,18 +24,18 @@ func (d *Downloader) providerBaseURL(source string) string {
 	source = canonicalProviderSource(source)
 	var configured, fallback string
 	switch source {
-	case sourceHuangguoAI:
-		configured, fallback = d.cfg.HuangguoAIURL, huangguoAIBaseURL
-	case sourceHuangguoVideo:
-		configured, fallback = d.cfg.HuangguoVideoURL, huangguoVideoBaseURL
-	case sourceHuangdou:
-		configured, fallback = d.cfg.HuangdouURL, huangdouBaseURL
 	case sourceHongguo:
 		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
-	case sourceHuangju:
-		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
+	case sourceSorani:
+		configured, fallback = d.cfg.SoraniURL, soraniBaseURL
+	case sourceHanxiaoquan:
+		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanBaseURL
+	case sourceLibvio:
+		configured, fallback = d.cfg.LibvioURL, libvioBaseURL
+	case sourceNetflixgc:
+		configured, fallback = d.cfg.NetflixgcURL, netflixgcBaseURL
 	default:
-		fallback = "https://d2pypzndaqisk.cloudfront.net"
+		return ""
 	}
 	return strings.TrimRight(firstNonEmpty(configured, fallback), "/")
 }
@@ -48,48 +47,20 @@ func providerSourceForURL(raw string) string {
 	}
 	host := strings.ToLower(parsed.Hostname())
 	switch {
-	case host == "huangguoai.com" || strings.HasSuffix(host, ".ediayikma.cc") || strings.HasSuffix(host, ".agdkczeyx.cc"):
-		return sourceHuangguoAI
-	case host == "huangguo.video" || host == "huangguoai.fit":
-		return sourceHuangguoVideo
-	case host == "tideember.cc" || host == "xqjurgek.top":
-		return sourceHuangdou
 	case host == "hongguoduanju.com" || host == "www.hongguoduanju.com":
 		return sourceHongguo
-	case host == "huangju.net" || host == "www.huangju.net" || host == "api.huangju.net":
-		return sourceHuangju
+	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc":
+		return sourceSorani
+	case host == "jennyhow.com" || host == "www.jennyhow.com":
+		return sourceHanxiaoquan
+	case host == "libvio.to" || host == "www.libvio.to" || host == "libvio.me" || host == "www.libvio.me":
+		return sourceLibvio
+	case host == "netflixgc.com" || host == "www.netflixgc.com" || host == "netflixgc.net" ||
+		host == "www.netflixgc.net" || host == "netflixgc.org" || host == "www.netflixgc.org":
+		return sourceNetflixgc
 	default:
 		return ""
 	}
-}
-
-func (d *Downloader) providerURLCandidates(raw string) []string {
-	source := providerSourceForURL(raw)
-	if source == "" || source == sourceHuangju {
-		return []string{raw}
-	}
-	parsed, _ := url.Parse(raw)
-	d.providerMu.Lock()
-	preferred := d.providerHosts[source]
-	d.providerMu.Unlock()
-	var candidates []string
-	seen := map[string]bool{}
-	add := func(candidate string) {
-		if candidate != "" && !seen[candidate] {
-			seen[candidate] = true
-			candidates = append(candidates, candidate)
-		}
-	}
-	add(rehostProviderURL(parsed, preferred))
-	configured := d.providerBaseURL(source)
-	add(rehostProviderURL(parsed, configured))
-	if providerSourceForURL(configured) == "" {
-		return candidates
-	}
-	for _, candidate := range providerURLCandidates(raw) {
-		add(candidate)
-	}
-	return candidates
 }
 
 func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (providerMedia, error) {
@@ -98,68 +69,22 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == "" {
 		chapter.Source = sourceFromDramaID(task.DramaID)
 	}
-	if chapter.Source == sourceCloudFront {
-		return d.resolveLegacyMedia(ctx, task)
+	if chapter.Source == sourceSorani {
+		return d.resolveSoraniMedia(ctx, task)
 	}
-	if chapter.Source == sourceHuangju {
-		return d.resolveHuangjuMedia(ctx, task)
+	if chapter.Source == sourceHanxiaoquan {
+		return d.resolveHanxiaoquanMedia(ctx, task)
+	}
+	if chapter.Source == sourceLibvio {
+		return d.resolveLibvioMedia(ctx, task)
+	}
+	if chapter.Source == sourceNetflixgc {
+		return d.resolveNetflixgcMedia(ctx, task)
 	}
 	if strings.HasPrefix(chapter.VideoURL, "hongguo-cenc://") {
 		return d.resolveHongguoMedia(ctx, task)
 	}
-	if chapter.PageURL == "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
-		if source, sourceID, valid := splitProviderDramaID(task.DramaID); valid {
-			_, chapters, err := d.GetHuangguoChapters(ctx, source, sourceID)
-			if err != nil {
-				return providerMedia{}, fmt.Errorf("刷新旧任务播放地址失败: %w", err)
-			}
-			matched := false
-			for _, fresh := range chapters {
-				if fresh.ID == chapter.ID {
-					chapter = fresh
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return providerMedia{}, fmt.Errorf("原章节已变化，请更新该合集后重新下载")
-			}
-		}
-	}
 	media := providerMedia{URL: chapter.VideoURL, Referer: firstNonEmpty(chapter.Referer, d.providerBaseURL(chapter.Source)+"/")}
-	if chapter.Source == sourceHuangdou {
-		_, sourceID, valid := splitProviderDramaID(task.DramaID)
-		if valid {
-			sequence, err := strconv.Atoi(chapter.EpisodeString(task.Index))
-			if err != nil || sequence < 1 {
-				return providerMedia{}, fmt.Errorf("黄豆集数无效")
-			}
-			client := newHuangdouAPIClient(d)
-			media, err = d.resolveHuangdouPlayback(ctx, client, sourceID, sequence)
-			if err != nil {
-				return providerMedia{}, err
-			}
-			media.Referer = client.host + "/home"
-		}
-	}
-	if chapter.PageURL != "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
-		responses := &playbackResponseURLs{}
-		pageContext := context.WithValue(ctx, playbackResponseURLsKey{}, responses)
-		body, err := d.fetchProviderText(pageContext, chapter.PageURL, media.Referer)
-		if err != nil {
-			return providerMedia{}, err
-		}
-		pageURL := chapter.PageURL
-		if actual, ok := responses.values.Load(chapter.PageURL); ok {
-			pageURL = actual.(string)
-		}
-		if chapter.Source == sourceHuangguoAI {
-			media.URL = parseAIVideoURL(body, pageURL)
-		} else {
-			media.URL = parseDataHLS(body, pageURL)
-		}
-		media.Referer = pageURL
-	}
 	if !isProviderHTTPMediaURL(media.URL) {
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)
 	}

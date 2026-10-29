@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -216,23 +218,45 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if apiErr == nil {
 		return media, nil
 	}
-	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", publicError(nativeErr), publicError(pageErr), apiErr)
+	// 0.7.40：红果对第三方客户端的取流已在 App 网关（端点级风控，返回空体）
+	// 和网页（只公开约 10 秒的试看片段）两侧同时收紧，
+	// 这里把「为什么不能播」直接写进错误，避免用户反复重试。
+	return providerMedia{}, fmt.Errorf(
+		"红果暂不可播：App 取流 %v；网页取流 %v；备用线路 %v。红果已收紧第三方取流，网页站只提供约 10 秒的试看片段，完整剧集需在红果 App 内观看",
+		publicError(nativeErr), publicError(pageErr), publicError(apiErr))
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	pageURL := hongguoBaseURL + "/player/" + url.PathEscape(seriesID) + "/" + url.PathEscape(videoID)
 	body, err := d.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
 	if err != nil {
+		// 站点对「非公开集」直接 404 播放页；先试公开流，再给可读说明。
+		if strings.Contains(err.Error(), "HTTP 404") {
+			if media, ok := d.hongguoPublicTrialMedia(ctx, "", videoID); ok {
+				return media, nil
+			}
+			return providerMedia{}, fmt.Errorf("红果该集只有约 10 秒的试看片段（站点未公开整集）；完整剧集需在红果 App 内观看，也可在其他站源查找这部剧")
+		}
 		return providerMedia{}, err
 	}
 	page := routerLoaderMap(parseRouterData(body), "player_", "player_page")
 	if mapString(page, "vid") != videoID || mapString(page, "series_id") != seriesID {
-		return providerMedia{}, fmt.Errorf("红果未返回所请求的剧集，可能仅允许网页试看；请在站点确认该集的访问权限")
+		// 0.7.39：站点改版后播放页可能不再有 player_page 数据块，
+		// 但公开试看流仍可拼出，先按公开流兜底，再判失败。
+		if media, ok := d.hongguoPublicTrialMedia(ctx, body, videoID); ok {
+			return media, nil
+		}
+		return providerMedia{}, fmt.Errorf("红果该集只有约 10 秒的试看片段（站点未公开整集）；完整剧集需在红果 App 内观看，也可在其他站源查找这部剧")
 	}
 	info, _ := page["video_player_info"].(map[string]any)
 	addresses := hongguoMediaAddresses(info)
 	if len(addresses) == 0 {
-		return providerMedia{}, fmt.Errorf("红果该集未提供公开播放地址，可能需要登录或 App 授权；不会将试看集冒充该集下载")
+		// 2026-10-27 起网页不再下发 video_player_info，改为前台拼 /video/public/<vid>/360p.mp4；
+		// 取不到直链时按公开流兜底。
+		if media, ok := d.hongguoPublicTrialMedia(ctx, body, videoID); ok {
+			return media, nil
+		}
+		return providerMedia{}, fmt.Errorf("红果该集只有约 10 秒的试看片段（站点未公开整集）；完整剧集需在红果 App 内观看，也可在其他站源查找这部剧")
 	}
 	duration, _ := strconv.ParseFloat(mapString(info, "duration"), 64)
 	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
@@ -242,6 +266,132 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 		media.Variants = append(media.Variants, variant)
 	}
 	return media, nil
+}
+
+// hongguoPublicStreamPath 匹配页面里内嵌的公开流路径（带 vid，便于校验）。
+var hongguoPublicStreamPath = regexp.MustCompile(`/video/public/([1-9][0-9]{0,18})/[A-Za-z0-9_.\-]+\.(?:mp4|m3u8)`)
+
+// hongguoPublicTrialMedia 取站点公开的试看流（0.7.39）。
+//
+// 站点前台（player.*.js）的取址规则是纯拼路径：
+//
+//	/video/public/<vid>/360p.mp4
+//
+// 站点对这个路径给的是**约 10 秒的试看片段**（实测 6 集全部 589~591 KB、
+// ffprobe 10.08 秒），不是整集；所以探测除了看 206，还要看总字节数，
+// 片段会被 hongguoPublicStreamReady 判为不可用，避免把 10 秒预告播成正片。
+// 路径里带完整 vid，也保证了不会张冠李戴。
+func (d *Downloader) hongguoPublicTrialMedia(ctx context.Context, body, videoID string) (providerMedia, bool) {
+	if !hongguoNumericID.MatchString(videoID) {
+		return providerMedia{}, false
+	}
+	var candidates []string
+	if match := hongguoPublicStreamPath.FindStringSubmatch(body); len(match) > 1 && match[1] == videoID {
+		// 部分集把地址直接写进 <video src>（第 1 集常见）。
+		candidates = append(candidates, hongguoBaseURL+match[0])
+	}
+	candidates = append(candidates, hongguoBaseURL+"/video/public/"+videoID+"/360p.mp4")
+	for _, address := range candidates {
+		if !d.hongguoPublicStreamReady(ctx, address) {
+			continue
+		}
+		quality := 0
+		if digits := hongguoQualityNumber.FindString(address[strings.LastIndex(address, "/")+1:]); digits != "" {
+			quality, _ = strconv.Atoi(digits)
+		}
+		return providerMedia{URL: address, Referer: hongguoBaseURL + "/", Quality: quality}, true
+	}
+	return providerMedia{}, false
+}
+
+// hongguoPublicStreamReady 探测公开流是否可取。
+//
+// 2026-10-27 实测（同一 vid 反复请求）：边缘节点在缓存未就绪时对首个请求回 404，
+// 间隔两三秒重试就会转成 206；并发稍高还会收到 444（站点主动断连限频）。
+// 单次探测会把大量真实可播的集数误判成「该集无片源」，所以这里必须退避重试。
+// hongguoPublicPreviewBytes 是「试看片段」的体积上限。
+//
+// 2026-10-27 实测：/video/public/<vid>/360p.mp4 在 6 集上全部是 589~591 KB，
+// ffprobe 时长一律 10.08 秒（640x360 h264 + aac）——站点公开给你的是十分钟
+// 影片里的一小段预告，不是整集。正片 360p 至少数 MB，所以用体积就能区分。
+const hongguoPublicPreviewBytes = 2 << 20
+
+func (d *Downloader) hongguoPublicStreamReady(ctx context.Context, address string) bool {
+	// 整个探测过程给 12 秒预算：单次请求偶尔会挂到超时，不能让点播放等太久。
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	const attempts = 4
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-probeCtx.Done():
+				return false
+			case <-time.After(1500 * time.Millisecond):
+			}
+		}
+		status, total, err := d.hongguoPublicStreamStatus(probeCtx, address)
+		if err == nil && (status == http.StatusOK || status == http.StatusPartialContent) {
+			// 站点给的公开文件只是十几秒预告，不能当整集播；重试也不会有变化。
+			if total > 0 && total < hongguoPublicPreviewBytes {
+				return false
+			}
+			return true
+		}
+		// 明确的鉴权拒绝不必浪费重试次数；404/444/超时都当作「可能还没就绪」。
+		if status == http.StatusForbidden || status == http.StatusUnauthorized {
+			return false
+		}
+		// 边缘节点是按连接命中的：复用 keep-alive 会一直问同一个未就绪的节点，
+		// 丢掉空闲连接强制重新拨号，才有机会落到已经缓存好的节点上。
+		if d.client != nil {
+			d.client.CloseIdleConnections()
+		}
+	}
+	return false
+}
+
+// hongguoWebUserAgent 是请求红果网页资源时使用的桌面浏览器 UA。
+//
+// 2026-10-27 实测：同一 vid 的 /video/public/<vid>/360p.mp4，用移动端（iPhone/Android/
+// App webview）UA 请求恒为 404，改用桌面 Chrome UA 才返回 206；播放页的移动版也少了
+// pcPlaybackAuthState / libraConfig 一整块数据（约 12KB）。所以网页侧不能沿用全局的
+// 移动 UA。
+const hongguoWebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+// hongguoPublicStreamStatus 探测公开流，返回状态码与资源总字节数。
+//
+// 总字节数来自 206 的 Content-Range（`bytes 0-1/589639`），用于识别
+// 「站点只给了十几秒试看片段」这种情况——只看状态码会把片段当成整集。
+func (d *Downloader) hongguoPublicStreamStatus(ctx context.Context, address string) (int, int64, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	// 只取 2 字节：够拿到 206/200 状态，不下载整集。
+	request.Header.Set("Range", "bytes=0-1")
+	request.Header.Set("User-Agent", hongguoWebUserAgent)
+	request.Header.Set("Referer", hongguoBaseURL+"/")
+	response, err := d.doCatalogRequestWithTimeout(request, 10*time.Second)
+	if err != nil {
+		return 0, 0, err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64))
+	_ = response.Body.Close()
+	return response.StatusCode, hongguoContentRangeTotal(response.Header), nil
+}
+
+// hongguoContentRangeTotal 从 Content-Range 里取资源总长，取不到返回 0。
+func hongguoContentRangeTotal(header http.Header) int64 {
+	value := header.Get("Content-Range")
+	slash := strings.LastIndex(value, "/")
+	if slash < 0 {
+		return 0
+	}
+	total, err := strconv.ParseInt(strings.TrimSpace(value[slash+1:]), 10, 64)
+	if err != nil || total <= 0 {
+		return 0
+	}
+	return total
 }
 
 func hongguoDramaFromAny(v any, category string) Drama {

@@ -78,11 +78,104 @@ func (engine *nativeEngine) loadCatalogCache() {
 }
 
 func migrateNativeDrama(drama nativeDrama) nativeDrama {
-	if drama.MetadataSchema == 0 && drama.Source == sourceHuangdou && drama.VIP != nil && !*drama.VIP {
-		drama.VIP = nil
-	}
 	drama.MetadataSchema = 1
 	return drama
+}
+
+func catalogKeySource(key string) string {
+	if index := strings.IndexByte(key, '|'); index >= 0 {
+		key = key[:index]
+	}
+	return canonicalProviderSource(key)
+}
+
+func (engine *nativeEngine) purgeRemovedSourceCaches() {
+	dropped := false
+	func() {
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		for key := range engine.catalogs {
+			if !isSupportedProviderSource(catalogKeySource(key)) {
+				delete(engine.catalogs, key)
+				dropped = true
+			}
+		}
+		for key := range engine.catalogStates {
+			if !isSupportedProviderSource(catalogKeySource(key)) {
+				delete(engine.catalogStates, key)
+				dropped = true
+			}
+		}
+		for key := range engine.categoryOptions {
+			if !isSupportedProviderSource(key) {
+				delete(engine.categoryOptions, key)
+				dropped = true
+			}
+		}
+		if dropped {
+			engine.writeCatalogDiskLocked()
+		}
+	}()
+	engine.purgeRemovedSourceFiles()
+}
+
+// purgeRemovedSourceFiles 清理已移除站源遗留在数据目录里的其它文件。
+//
+// 0.7.48 移除了黄豆 / 黄剧 / 黄果剧场 / 黄果 AI / 黄果旧版：它们的状态记录
+// （sources.json）、会话缓存（huangguo-session.json）和详情缓存
+// （detail_cache/details.json）已经没有任何代码会再读取，留在磁盘上既不占地方
+// 也没有意义，还会让"这个站源还在"看起来像没删干净。
+func (engine *nativeEngine) purgeRemovedSourceFiles() {
+	directory := engine.directory
+	if directory == "" {
+		return
+	}
+	// 站源任务记录：丢掉已移除站源的条目并回写（与 loadSourceRecords 的过滤保持一致）。
+	recordsPath := filepath.Join(directory, "sources.json")
+	if body, err := os.ReadFile(recordsPath); err == nil && len(body) <= nativeSourceMaxBytes {
+		var records map[string]json.RawMessage
+		if json.Unmarshal(body, &records) == nil {
+			dropped := false
+			for source := range records {
+				if !isSupportedProviderSource(source) {
+					delete(records, source)
+					dropped = true
+				}
+			}
+			if dropped {
+				if body, err = json.Marshal(records); err == nil {
+					_ = writeNativeCacheFile(recordsPath, body)
+				}
+			}
+		}
+	}
+	// 黄果会话缓存：整个文件都是已移除站源的产物，直接删除。
+	_ = os.Remove(filepath.Join(directory, "huangguo-session.json"))
+	// 详情缓存：条目 key 形如 "<source>|<剧集 ID>"，按前缀丢掉已移除站源。
+	detailPath := filepath.Join(directory, "detail_cache", "details.json")
+	if body, err := os.ReadFile(detailPath); err == nil && len(body) <= 8<<20 {
+		var document map[string]json.RawMessage
+		if json.Unmarshal(body, &document) == nil {
+			var entries map[string]json.RawMessage
+			if raw, found := document["entries"]; found && json.Unmarshal(raw, &entries) == nil {
+				dropped := false
+				for key := range entries {
+					if !isSupportedProviderSource(catalogKeySource(key)) {
+						delete(entries, key)
+						dropped = true
+					}
+				}
+				if dropped {
+					if raw, err = json.Marshal(entries); err == nil {
+						document["entries"] = raw
+						if body, err = json.Marshal(document); err == nil {
+							_ = writeNativeCacheFile(detailPath, body)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
@@ -90,9 +183,6 @@ func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	items := append([]nativeDrama{}, engine.catalogs[source]...)
-	for index := range items {
-		items[index].Cover = repairLegacyCoverURL(items[index])
-	}
 	state, found := engine.catalogStates[source]
 	age := time.Since(state.UpdatedAt)
 	result := nativeCatalogResult{

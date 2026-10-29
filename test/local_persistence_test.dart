@@ -1,11 +1,11 @@
 import 'dart:convert';
 
-import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_snapshot.dart';
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/playback_preferences.dart';
-import 'package:duanju_app/profiles_screen.dart';
+import 'package:duanju_app/core/local_profiles.dart';
+import 'package:duanju_app/core/local_snapshot.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/player/playback_preferences.dart';
+import 'package:duanju_app/ui/profiles_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -91,12 +91,12 @@ void main() {
           await expectLater(change(), throwsStateError);
           expect(store.favorites.map((entry) => entry.id), [drama.id]);
           expect(store.watched(drama.id)?.position, 15);
-          expect(store.themeMode, 'system');
+          expect(store.themeMode, 'dark');
           expect(store.playbackPreferences.speed, 1);
           final restored = await restart(platform);
           expect(restored.favorites.single.id, drama.id);
           expect(restored.watched(drama.id)?.position, 15);
-          expect(restored.themeMode, 'system');
+          expect(restored.themeMode, 'dark');
           expect(
             restored.preferences.getString('plugin_secret'),
             'outside-the-backup',

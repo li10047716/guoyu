@@ -5,9 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,49 +15,44 @@ import (
 )
 
 type Config struct {
-	dataDir          string
-	MaxPagesPerSort  int
-	PageSize         int
-	Retries          int
-	InsecureTLS      bool
-	HuangguoAIURL    string
-	HuangguoVideoURL string
-	HuangdouURL      string
-	HongguoURL       string
-	HuangjuURL       string
-	HuangjuAPIURL    string
-	Token            string
-	AESKeyHex        string
-	InterfaceKey     string
-	ParamKey         string
-	ParamIV          string
-	APIBase          string
-	CDNURL           string
+	dataDir         string
+	MaxPagesPerSort int
+	PageSize        int
+	Retries         int
+	InsecureTLS     bool
+	HongguoURL      string
+	SoraniURL       string
+	HanxiaoquanURL  string
+	LibvioURL       string
+	NetflixgcURL    string
+	Token           string
+	AESKeyHex       string
+	InterfaceKey    string
+	ParamKey        string
+	ParamIV         string
+	APIBase         string
+	CDNURL          string
 }
 
 type Downloader struct {
-	rankings              rankingCache
-	cfg                   Config
-	client                *http.Client
-	huangdouDetails       map[string]huangdouDetailEntry
-	huangdouDetailPending map[string]*huangdouDetailCall
-	huangdouVIPProbes     map[string]huangdouVIPProbe
-	providerMu            sync.Mutex
-	providerHosts         map[string]string
-	limiter               *requestLimiter
-	proxyRouter           *proxyRouter
-	hongguoOnce           sync.Once
-	hongguo               *hongguoAppClient
-	huangjuOnce           sync.Once
-	huangju               *huangjuAPIClient
-	diagnostics           *diagnosticLog
-	apiMu                 sync.Mutex
-	apiBase               string
-	apiFailures           map[string]time.Time
-	legacyOnce            sync.Once
-	legacy                *legacyAPIClient
-	previewMu             sync.Mutex
-	previewSessions       map[string]*huangguoPreviewSession
+	rankings      rankingCache
+	cfg           Config
+	client        *http.Client
+	providerMu    sync.Mutex
+	providerHosts map[string]string
+	limiter       *requestLimiter
+	proxyRouter   *proxyRouter
+	hongguoOnce   sync.Once
+	hongguo       *hongguoAppClient
+	diagnostics   *diagnosticLog
+	apiMu         sync.Mutex
+	apiBase       string
+	apiFailures   map[string]time.Time
+
+	// LIBVIO 的人机校验凭证（__cdn_verified），同一下载器内共享。
+	libvioMu      sync.Mutex
+	libvioCookie  string
+	libvioExpires time.Time
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 1, PageSize: 30, Retries: 2} }
@@ -105,6 +98,14 @@ type nativeInput struct {
 	Session          string                  `json:"session"`
 	Sequence         int64                   `json:"sequence"`
 	Force            bool                    `json:"force"`
+	// 0.7.61：小说阅读（novelId = 书号，chapterId = 章节号）。
+	NovelID   string `json:"novelId"`
+	ChapterID string `json:"chapterId"`
+	// 0.7.67：本地书导入（libraryDir = 应用数据目录，filePath = 选中的文件）
+	// 与书城分类（categoryId = 站点分类号）。
+	LibraryDir string `json:"libraryDir"`
+	FilePath   string `json:"filePath"`
+	CategoryID int    `json:"categoryId"`
 }
 
 type nativeCatalogResult struct {
@@ -251,7 +252,7 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
-	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
+	d.client = &http.Client{Transport: cdn, Timeout: 45 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("站源重定向次数过多")
@@ -265,6 +266,7 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
+	engine.purgeRemovedSourceCaches()
 	engine.loadSourceRecords()
 	engine.covers = newNativeCoverCache(directory, d)
 	engine.downloads = newNativeDownloads(engine)
@@ -459,6 +461,70 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "release":
 		engine.nativeReleasePlayback(input.Session)
 		return true, nil
+	// 0.7.61：小说阅读（内置书源，纯 HTML 解析）。
+	case "novelSearch":
+		items, err := engine.downloader.novelSearch(ctx, input.Query)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items, "source": NovelSourceBiquge365}, nil
+	case "novelDetail":
+		book, err := engine.downloader.novelDetail(ctx, input.NovelID)
+		if err != nil {
+			return nil, err
+		}
+		return book, nil
+	case "novelChapters":
+		items, err := engine.downloader.novelChapters(ctx, input.NovelID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items}, nil
+	case "novelContent":
+		text, err := engine.downloader.novelContent(ctx, input.NovelID, input.ChapterID)
+		if err != nil {
+			return nil, err
+		}
+		return text, nil
+	// 0.7.67：书城分类与收藏排行。
+	case "novelCategories":
+		return map[string]any{"items": novelCategories()}, nil
+	case "novelCategoryBooks":
+		result, err := engine.downloader.novelCategoryBooks(ctx, input.CategoryID, input.Page)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "novelRanking":
+		items, err := engine.downloader.novelRanking(ctx, input.CategoryID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items}, nil
+	// 0.7.67：本地书籍。
+	case "novelImportLocal":
+		book, err := engine.downloader.importLocalNovel(ctx, input.LibraryDir, input.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		return book, nil
+	case "novelLocalChapters":
+		items, err := engine.downloader.localNovelChapters(input.LibraryDir, input.NovelID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items}, nil
+	case "novelLocalContent":
+		text, err := engine.downloader.localNovelText(input.LibraryDir, input.NovelID, input.ChapterID)
+		if err != nil {
+			return nil, err
+		}
+		return text, nil
+	case "novelLocalRemove":
+		if err := engine.downloader.removeLocalNovel(input.LibraryDir, input.NovelID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"removed": true}, nil
 	default:
 		return nil, errors.New("不支持的应用操作")
 	}
@@ -466,7 +532,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 
 func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput) (nativeCatalogResult, error) {
 	source := canonicalProviderSource(input.Source)
-	if !isHuangguoProviderSource(source) {
+	if !isSupportedProviderSource(source) {
 		return nativeCatalogResult{}, errors.New("请选择有效站源")
 	}
 	category := strings.TrimSpace(input.Category)
@@ -508,8 +574,41 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		}
 		return result, nil
 	}
-	if query != "" && source == sourceHuangju {
-		items, more, err := d.fetchHuangjuCatalogPage(ctx, page, "", query)
+	if query != "" && source == sourceSorani {
+		items, more, err := d.fetchSoraniCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceHanxiaoquan {
+		items, more, err := d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceLibvio {
+		items, more, err := d.fetchLibvioCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceNetflixgc {
+		items, more, err := d.fetchNetflixgcSearchPageAt(ctx, page, query)
 		if err != nil {
 			return result, err
 		}
@@ -570,41 +669,19 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
 			result.HasMore = page < totalPages
 		}
-	case sourceHuangdou:
-		client := newHuangdouAPIClient(d)
-		var decoded any
-		err = client.call(ctx, "/drama/list", map[string]any{"page": strconv.Itoa(page), "page_size": "30"}, &decoded)
-		if err == nil {
-			rows := huangdouList(decoded)
-			for _, row := range rows {
-				if drama := huangdouDramaFromMap(row); drama.ID != "" {
-					items = append(items, drama)
-				}
-			}
-			result.HasMore = len(rows) >= 30
-		}
-	case sourceHuangguoAI:
-		items, result.HasMore, err = d.fetchHuangguoAICatalogPage(ctx, page, category)
-	case sourceHuangju:
-		items, result.HasMore, err = d.fetchHuangjuCatalogPage(ctx, page, category, "")
-	case sourceHuangguoVideo:
-		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
-		if category != "" {
-			address += "&category=" + url.QueryEscape(category)
-		}
-		var body string
-		body, err = d.fetchProviderText(ctx, address, d.providerBaseURL(source)+"/")
-		if err == nil {
-			items = parseHuangguoVideoCards(body, address)
-		}
-		result.HasMore = len(items) >= 20
-	case sourceCloudFront:
-		items, result.HasMore, err = d.fetchLegacyCatalogCategoryPage(ctx, page, category)
+	case sourceSorani:
+		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
+	case sourceHanxiaoquan:
+		items, result.HasMore, err = d.fetchHanxiaoquanCatalogPage(ctx, page, category, "")
+	case sourceLibvio:
+		items, result.HasMore, err = d.fetchLibvioCatalogPage(ctx, page, category, "")
+	case sourceNetflixgc:
+		items, result.HasMore, err = d.fetchNetflixgcCatalogPage(ctx, page, category, "")
 	}
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju {
+	if len(items) == 0 && page == 1 {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
@@ -632,16 +709,16 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	var chapters []Chapter
 	var err error
 	switch source {
-	case sourceHuangguoAI:
-		raw, chapters, err = engine.downloader.fetchHuangguoAIDetail(ctx, sourceID)
-	case sourceHuangguoVideo:
-		raw, chapters, err = engine.downloader.fetchHuangguoVideoDetail(ctx, sourceID)
-	case sourceCloudFront:
-		raw, chapters, err = engine.downloader.fetchLegacyDetail(ctx, sourceID)
-	case sourceHuangju:
-		raw, chapters, err = engine.downloader.fetchHuangjuDetail(ctx, sourceID)
+	case sourceSorani:
+		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
+	case sourceHanxiaoquan:
+		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
+	case sourceLibvio:
+		raw, chapters, err = engine.downloader.fetchLibvioDetail(ctx, sourceID)
+	case sourceNetflixgc:
+		raw, chapters, err = engine.downloader.fetchNetflixgcDetail(ctx, sourceID)
 	default:
-		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
+		title, chapters, err = engine.downloader.GetProviderChapters(ctx, source, sourceID)
 	}
 	if err != nil {
 		return nil, err
@@ -659,24 +736,7 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw := engine.downloader.hongguoCachedDrama(Drama{ID: drama.ID, Title: drama.Title, Source: source})
 		drama = mergeNativeDrama(drama, nativeNormalize(raw))
 	}
-	if source == sourceHuangdou {
-		if row, err := engine.downloader.huangdouDetail(ctx, sourceID); err == nil {
-			// 详情接口对试看剧不带 VIP 标记；若刚才的探询已有结论，
-			// 用它回写 Drama.VIP，否则界面会一直显示“VIP 状态待补齐”。
-			var vipOverride *bool
-			if known, hasVIP := engine.downloader.huangdouVIPProbeResult(sourceID); known {
-				vipOverride = &hasVIP
-			}
-			fresh := nativeNormalize(huangdouDramaFromMapVIP(row, vipOverride))
-			if fresh.ID == drama.ID {
-				drama = mergeNativeDrama(drama, fresh)
-			}
-		}
-	}
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
-	if source == sourceHuangju {
-		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
-	}
 	warning := ""
 	if err := engine.saveDetailMetadata(drama); err != nil {
 		warning = err.Error()

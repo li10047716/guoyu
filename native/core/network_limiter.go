@@ -91,12 +91,6 @@ type requestLimiter struct {
 
 type backgroundCatalogKey struct{}
 
-// skipCatalogGateKey 标记"镜像竞速请求"，不参与全局并发与间隔节流。
-//
-// 原因：黄果AI 的镜像站时通时不通，只有真正并行撞上去才有可能命中可用节点；
-// 若被并发限制器压成 3 个一批，8 个候选会退化成三批串行，成功率反而更低。
-type skipCatalogGateKey struct{}
-
 func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter {
 	if concurrency < 1 {
 		concurrency = 1
@@ -110,18 +104,11 @@ func (limiter *requestLimiter) notifyLocked() {
 }
 
 func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Request) (func(), error) {
-	if ctx.Value(skipCatalogGateKey{}) != nil {
-		// 镜像竞速请求：只受请求自身的 context 超时约束。
-		return func() {}, nil
-	}
 	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
 	host := strings.ToLower(request.URL.Hostname())
 	source := providerSourceForURL(request.URL.String())
 	if source == "" {
 		source = host
-		if strings.HasSuffix(host, ".cloudfront.net") {
-			source = "cloudfront"
-		}
 	}
 	limiter.mu.Lock()
 	if !background {
@@ -246,11 +233,6 @@ func (d *Downloader) doCatalogRequestWithTimeout(request *http.Request, timeout 
 func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout time.Duration, prepare func(*http.Request)) (*http.Response, error) {
 	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
 		timeout = 8 * time.Second
-		// 黄果剧场（huangguoai.fit）经 Cloudflare，直连响应常需 10~25 秒；
-		// 按后台 8 秒上限会稳定误判超时，这里单独放宽。
-		if strings.HasSuffix(strings.ToLower(request.URL.Hostname()), "huangguoai.fit") {
-			timeout = 25 * time.Second
-		}
 	}
 	base := request.Context()
 	release, err := d.limiter.acquire(base, request)

@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:duanju_app/home_screen.dart';
-import 'package:duanju_app/app_build.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/app_build.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/widgets.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/ui/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -85,17 +85,14 @@ void main() {
       expect(find.byTooltip('更新当前站源'), findsOneWidget);
 
       if (allSourcesEnabled) {
-        await source('黄豆');
+        await source('青空次元');
         expect(find.byTooltip('VIP：隐藏'), findsOneWidget);
         expect(find.text('会员合成剧'), findsNothing);
-        await capture('interface-huangdou-vip');
-        for (final name in ['黄果', '红果']) {
-          await source(name);
-          expect(find.textContaining('VIP：'), findsNothing);
-          expect(find.text('会员合成剧'), findsWidgets);
-        }
+        await capture('interface-sorani-vip');
+        await source('红果');
+        expect(find.text('红果'), findsWidgets);
       } else {
-        expect(find.text('黄豆'), findsNothing);
+        expect(find.text('青空次元'), findsNothing);
         expect(find.text('红果'), findsOneWidget);
       }
       await store.setThemeMode('dark');
@@ -130,7 +127,7 @@ void main() {
         'systemThemeByDefault': true,
         'refreshAnimation': true,
         'alignedPosters': true,
-        'vipOnlyOnHuangdou': true,
+        'vipFilterEverySource': true,
         'downloadMenuAboveFilters': true,
         'bulkPause': true,
         'downloadFilter': true,

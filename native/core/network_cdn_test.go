@@ -14,7 +14,7 @@ import (
 func TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity(t *testing.T) {
 	var direct, lookups atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Host != "tp.tuafjz.cn" || request.TLS.ServerName != "tp.tuafjz.cn" || request.URL.RequestURI() != "/videos/synthetic/crypt.key?signature=a%2Fb" || request.Header.Get("Referer") != "https://huangguoai.com/watch/synthetic/" {
+		if request.Host != "tp.tuafjz.cn" || request.TLS.ServerName != "tp.tuafjz.cn" || request.URL.RequestURI() != "/videos/synthetic/crypt.key?signature=a%2Fb" || request.Header.Get("Referer") != "https://hongguoduanju.com/watch/synthetic/" {
 			t.Error("DNS recovery changed SNI, host, signature or referer", request.Host, request.URL, request.TLS.ServerName)
 		}
 		_, _ = writer.Write([]byte("0123456789abcdef"))
@@ -47,7 +47,7 @@ func TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity(t *testing.T) {
 	d := &Downloader{client: &http.Client{Transport: transport}}
 	for index := 0; index < 2; index++ {
 		request, _ := http.NewRequest(http.MethodGet, "https://tp.tuafjz.cn/videos/synthetic/crypt.key?signature=a%2Fb", nil)
-		request.Header.Set("Referer", "https://huangguoai.com/watch/synthetic/")
+		request.Header.Set("Referer", "https://hongguoduanju.com/watch/synthetic/")
 		response, err := d.doMediaRequest(request)
 		if err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity(t *testing.T) {
 func TestCoverDNSRecoveryAcceptsNewImageHosts(t *testing.T) {
 	var direct, lookups atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Host != "new-cover.example.test" || request.TLS.ServerName != "new-cover.example.test" || request.URL.RequestURI() != "/poster/synthetic.img?signature=a%2Fb" || request.Header.Get("Referer") != "https://huangguoai.com/watch/synthetic/" {
+		if request.Host != "new-cover.example.test" || request.TLS.ServerName != "new-cover.example.test" || request.URL.RequestURI() != "/poster/synthetic.img?signature=a%2Fb" || request.Header.Get("Referer") != "https://hongguoduanju.com/watch/synthetic/" {
 			t.Error("DNS recovery changed SNI, host, signature or referer", request.Host, request.URL, request.TLS.ServerName)
 		}
 		_, _ = writer.Write([]byte("0123456789abcdef"))
@@ -104,7 +104,7 @@ func TestCoverDNSRecoveryAcceptsNewImageHosts(t *testing.T) {
 	d := &Downloader{client: &http.Client{Transport: transport}}
 	for index := 0; index < 2; index++ {
 		request, _ := http.NewRequestWithContext(context.WithValue(context.Background(), nativeCoverNetworkKey{}, true), http.MethodGet, "https://new-cover.example.test/poster/synthetic.img?signature=a%2Fb", nil)
-		request.Header.Set("Referer", "https://huangguoai.com/watch/synthetic/")
+		request.Header.Set("Referer", "https://hongguoduanju.com/watch/synthetic/")
 		response, err := d.doMediaRequest(request)
 		if err != nil {
 			t.Fatal(err)

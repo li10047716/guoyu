@@ -1,10 +1,10 @@
 import 'dart:convert';
 
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/local_profiles.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
+import 'package:duanju_app/core/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,7 +14,7 @@ import 'fixtures.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const drama = Drama(id: 'hongguo:1', source: 'hongguo', title: '合成短剧');
-  const denied = Drama(id: 'huangdou:2', source: 'huangdou', title: '受限合成短剧');
+  const denied = Drama(id: 'sorani:2', source: 'sorani', title: '受限合成短剧');
 
   test(
     'profiles require an admin password, isolate records and lock on restart',
@@ -128,8 +128,8 @@ void main() {
       final repository = NativeRepository()..access = store;
       expect(repository.supportsDownloads, isFalse);
       for (final request in [
-        () => repository.catalog('huangdou'),
-        () => repository.cached('huangdou'),
+        () => repository.catalog('sorani'),
+        () => repository.cached('sorani'),
         () => repository.detail(denied),
         () => repository.cover(denied),
         () => repository.resolve(denied, Episode({'id': '1'}, 1)),
@@ -181,8 +181,8 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('下载'), findsNothing);
-    expect(find.text('黄豆'), findsNothing);
-    expect(find.text('黄果 AI'), findsNothing);
+    expect(find.text('青空次元'), findsNothing);
+    expect(find.text('韩小圈'), findsNothing);
     expect(find.text('红果'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     store.dispose();

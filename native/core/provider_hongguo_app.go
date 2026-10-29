@@ -17,6 +17,16 @@ import (
 
 const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
+// hongguoAttemptsKey 让调用方按请求类型压低 App 接口的重试次数。
+type hongguoAttemptsKey struct{}
+
+// errHongguoAppEmptyBody 网关「200 + 空体」。
+//
+// 0.7.39 实测：目录/详情接口偶发空体（可重试），而播放取流端点
+// （video_model / multi_video_model）对第三方客户端**稳定**返回空体，
+// 说明是端点级风控，不是网络抖动。
+var errHongguoAppEmptyBody = errors.New("红果 App 接口未返回有效数据")
+
 const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
 type hongguoCatalogCursor struct {
@@ -187,6 +197,11 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	if attempts > 5 {
 		attempts = 5
 	}
+	// 取流（播放/下载）端点被网关稳定拒收时，4 次退避要白等 5 秒以上；
+	// 允许调用方按上下文压低重试次数（见 resolveHongguoAppMedia）。
+	if limit, ok := ctx.Value(hongguoAttemptsKey{}).(int); ok && limit > 0 && attempts > limit {
+		attempts = limit
+	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := hongguoAppThrottle(ctx); err != nil {
@@ -246,7 +261,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if len(content) == 0 || len(content) > providerMaxBodyBytes {
 			// 0.7.16：空体是红果网关的间歇性风控表现（突发请求时出现），
 			// 属于可重试失败；原先直接返回错误，导致首页三组推荐并发时整片失败。
-			lastErr = errors.New("红果 App 接口未返回有效数据")
+			lastErr = errHongguoAppEmptyBody
 			continue
 		}
 		var result map[string]any

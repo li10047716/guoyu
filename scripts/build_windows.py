@@ -22,6 +22,11 @@ if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
 with china_mirror_environment(environment, options.cn_mirrors, gradle=False) as env:
     with mirrored_pub_lockfile(root, env):
+        # 0.7.58：先修插件 junction——flutter 的 pub get / build 会把
+        # ephemeral 里的 junction 重置成真目录或清空，导致 build 在
+        # createPluginSymlinks 阶段崩（errno 183/1314）。本机没开
+        # Developer Mode，必须始终用 junction 兜底。
+        subprocess.run([sys.executable, str(root / 'scripts' / 'fix_plugin_links.py')], check=True)
         subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'windows', *variant.arguments],
                        cwd=root, env=env, check=True)
         subprocess.run([flutter, 'pub', 'get', '--enforce-lockfile'], cwd=root, env=env, check=True)

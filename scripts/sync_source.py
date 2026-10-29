@@ -25,7 +25,7 @@ EXCLUDED_DIRECTORIES = {
     '.ruff_cache', '.cache', '.venv', 'venv', 'build', 'dist', 'coverage',
     'node_modules', 'vendor', 'Pods', 'Carthage', 'DerivedData', '.swiftpm', 'xcuserdata',
     '.symlinks', 'ephemeral', 'jniLibs', 'CMakeFiles', 'sdk', 'android-sdk',
-    'flutter-sdk', 'ndk', 'toolchains',
+    'flutter-sdk', 'ndk', 'toolchains', 'capture-out',
 }
 EXCLUDED_NAMES = {
     '.DS_Store', 'Thumbs.db', 'local.properties', 'key.properties',
@@ -38,7 +38,7 @@ EXCLUDED_PATTERNS = (
     '*.apk', '*.aab', '*.ipa', '*.exe', '*.zip', '*.7z', '*.tar', '*.gz',
     '*.tgz', '*.jks', '*.keystore', '*.p12', '*.pfx', '*.pem', '*.key',
     '*.suo', '*.user', '*.userosscache', '*.sln.docstates', '*.xcframework',
-    '*.framework', '*.xcuserstate', '._*',
+    '*.framework', '*.xcuserstate', '._*', '*.har',
 )
 EXCLUDED_PATHS = {
     'android/gradlew', 'android/gradlew.bat',

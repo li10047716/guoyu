@@ -1,6 +1,6 @@
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/vertical_feed_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/player/vertical_feed_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';

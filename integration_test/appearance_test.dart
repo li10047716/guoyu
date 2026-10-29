@@ -1,8 +1,8 @@
-import 'package:duanju_app/app_bottom_navigation.dart';
-import 'package:duanju_app/home_screen.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/ui/app_bottom_navigation.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/settings_screen.dart';
+import 'package:duanju_app/ui/settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -56,7 +56,7 @@ void main() {
     await tester.pumpAndSettle();
     await binding.convertFlutterSurfaceToImage();
     await capture('appearance-system-home');
-    await tester.tap(find.byKey(const ValueKey('bottom-nav-1')));
+    await tester.tap(find.byKey(const ValueKey('bottom-nav-0')));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('更多'));
     await tester.pumpAndSettle();
@@ -77,7 +77,7 @@ void main() {
       tester
           .widget<AppBottomNavigation>(find.byType(AppBottomNavigation))
           .selectedIndex,
-      1,
+      0,
     );
     await capture('appearance-light-favorites');
     await tester.tap(find.byKey(const ValueKey('bottom-nav-0')));

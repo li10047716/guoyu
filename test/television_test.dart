@@ -1,8 +1,8 @@
-import 'package:duanju_app/app_layout.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/ui/app_layout.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/remote_widgets.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/ui/remote_widgets.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -138,7 +138,8 @@ void main() {
         await tester.pumpAndSettle();
         await press(tester, LogicalKeyboardKey.select);
         expect(repository.detailCalls, 1);
-        expect(find.byKey(const ValueKey('start-play')), findsOneWidget);
+        // 0.7.26：详情页去掉了「继续播放」按钮，改为直接用选集格子播放。
+        expect(find.byKey(const ValueKey('episode-1')), findsOneWidget);
         focusRemote(tester, find.byKey(const ValueKey('episode-1')));
         await tester.pumpAndSettle();
         await press(tester, LogicalKeyboardKey.select);

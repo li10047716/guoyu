@@ -1,11 +1,11 @@
 import 'dart:convert';
 
-import 'package:duanju_app/app_build.dart';
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/core/app_build.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/local_profiles.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
+import 'package:duanju_app/core/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,22 +20,29 @@ void main() {
   testWidgets(
     'edition branding and restored source match the compiled catalog',
     (tester) async {
-      SharedPreferences.setMockInitialValues({'source': 'huangdou'});
+      SharedPreferences.setMockInitialValues({'source': 'sorani'});
       final store = LocalStore(await SharedPreferences.getInstance());
       final repository = FixtureRepository();
       await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
       await tester.pumpAndSettle();
-      expect(find.text(allSourcesEnabled ? '真果鉴' : '红果鉴'), findsOneWidget);
-      expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-      expect(repository.requests, [allSourcesEnabled ? 'huangdou' : 'hongguo']);
-      expect(store.sources.length, allSourcesEnabled ? 5 : 1);
+      // 0.7.21：首页竖滑流移除后默认进「发现」页，顶栏标题是站源菜单，
+      // 应用名改从「更多 → 关于」入口校验版本烙印。
+      await tester.tap(find.byTooltip('更多'));
+      await tester.pumpAndSettle();
+      expect(find.text('关于$appName'), findsOneWidget);
+      await tester.tapAt(const Offset(400, 560));
+      await tester.pumpAndSettle();
+      expect(appName, '果屿');
+      expect(appSlug, allSourcesEnabled ? 'guoyu' : 'guoyu-hongguo');
+      expect(repository.requests, [allSourcesEnabled ? 'sorani' : 'hongguo']);
+      expect(store.sources.length, allSourcesEnabled ? 3 : 1);
       for (final source in SourceSite.knownValues.skip(1)) {
         expect(
           find.text(source.name),
           allSourcesEnabled ? findsOneWidget : findsNothing,
         );
       }
-      expect(store.preferences.getString('source'), 'huangdou');
+      expect(store.preferences.getString('source'), 'sorani');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       store.dispose();
@@ -56,7 +63,7 @@ void main() {
           ).toJson(),
       ];
       SharedPreferences.setMockInitialValues({
-        'source': 'huangdou',
+        'source': 'sorani',
         'favorites': jsonEncode([red.toJson(), other.toJson()]),
         'history': jsonEncode(history),
       });
@@ -72,15 +79,15 @@ void main() {
       expect((library['favorites'] as List).single['id'], other.id);
       expect(library['history'], hasLength(2));
       await store.importBackup(backup);
-      expect(store.preferences.getString('source'), 'huangdou');
+      // 0.7.48：本地数据已迁到 localSnapshot.v1 快照里，旧的独立键不会再更新，
+      // 因此恢复结果要按内存状态断言：已移除站源的记录被丢弃，而「当前版本
+      // 未启用」的站源记录仍然保留在存储里，只在视图上被过滤掉。
+      expect(store.preferences.getString('source'), 'sorani');
       expect(
-        readJsonList(store.preferences.getString('history')),
-        hasLength(2),
+        store.favorites.map((drama) => drama.id).toList(),
+        allSourcesEnabled ? [other.id] : <String>[],
       );
-      expect(
-        readJsonList(store.preferences.getString('favorites')).single['id'],
-        other.id,
-      );
+      expect(store.history, hasLength(allSourcesEnabled ? 2 : 1));
       store.dispose();
     },
   );
@@ -100,21 +107,21 @@ void main() {
           const LocalProfile(
             id: 'viewer',
             name: '已有用户',
-            sources: ['huangdou'],
+            sources: ['sorani'],
             download: false,
           ).toJson(),
         ]),
         'activeProfile': 'viewer',
-        'profile.viewer.source': 'huangdou',
+        'profile.viewer.source': 'sorani',
       });
       final store = LocalStore(await SharedPreferences.getInstance());
       expect(store.profile.id, 'viewer');
       expect(store.profile.admin, isFalse);
-      expect(store.profile.sources, ['huangdou']);
+      expect(store.profile.sources, ['sorani']);
       expect(store.canDownload, isFalse);
-      expect(store.source, allSourcesEnabled ? 'huangdou' : '');
+      expect(store.source, allSourcesEnabled ? 'sorani' : '');
       expect(store.allowsSource('hongguo'), isFalse);
-      expect(store.allowsSource('huangdou'), allSourcesEnabled);
+      expect(store.allowsSource('sorani'), allSourcesEnabled);
       store.dispose();
     },
   );

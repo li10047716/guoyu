@@ -8,11 +8,17 @@ class BuildVariant:
 
     @property
     def name(self):
-        return '真果鉴' if self.all_sources else '红果鉴'
+        # 0.7.34：品牌统一为「果屿」，两个变体共用同一个显示名。
+        return '果屿'
 
     @property
     def slug(self):
-        return 'zhenguojian' if self.all_sources else 'hongguojian'
+        return 'guoyu' if self.all_sources else 'guoyu-hongguo'
+
+    @property
+    def executable(self):
+        """Windows 构建产物名，与 windows/CMakeLists.txt 的 BINARY_NAME 一致。"""
+        return 'guoyu.exe'
 
     @property
     def arguments(self):
@@ -40,4 +46,4 @@ class BuildVariant:
 
 def add_variant_argument(parser):
     parser.add_argument('--all-sources', action='store_true',
-                        help='构建包含全部站源的真果鉴；默认构建仅红果的红果鉴')
+                        help='构建包含全部站源的果屿；默认构建仅红果的果屿')

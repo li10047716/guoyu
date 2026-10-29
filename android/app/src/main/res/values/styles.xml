@@ -7,6 +7,9 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
-    <style name="LaunchTheme" parent="AppSystemBarTheme" />
+    <style name="LaunchTheme" parent="AppSystemBarTheme">
+        <!-- 与 Flutter 开屏页同底色，从系统启动到首帧不闪白 -->
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
     <style name="NormalTheme" parent="AppSystemBarTheme" />
 </resources>

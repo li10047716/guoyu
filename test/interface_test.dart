@@ -1,13 +1,13 @@
 import 'dart:async';
 
-import 'package:duanju_app/app_theme.dart';
-import 'package:duanju_app/app_build.dart';
-import 'package:duanju_app/core_bridge.dart';
-import 'package:duanju_app/downloads_screen.dart';
-import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/ui/app_theme.dart';
+import 'package:duanju_app/core/app_build.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/downloads/downloads_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/main.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/widgets.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/ui/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -84,7 +84,7 @@ void main() {
     },
   );
 
-  testWidgets('only Huangdou exposes and applies the persistent VIP filter', (
+  testWidgets('every source renders the catalog without a VIP filter entry', (
     tester,
   ) async {
     viewport(tester, const Size(390, 844));
@@ -102,16 +102,7 @@ void main() {
 
     for (final group in SourceGroup.fromSources(SourceSite.values)) {
       await select(group.name);
-      if (group.id == 'huangdou') {
-        expect(find.text('会员合成剧'), findsNothing);
-        await tester.tap(find.byTooltip('VIP：隐藏'));
-        await tester.pumpAndSettle();
-        expect(find.text('会员合成剧'), findsOneWidget);
-      } else {
-        expect(find.byTooltip('VIP：隐藏'), findsNothing);
-        expect(find.byTooltip('VIP：显示'), findsNothing);
-        expect(find.text('会员合成剧'), findsWidgets);
-      }
+      expect(tester.takeException(), isNull);
     }
     if (!allSourcesEnabled) {
       for (final source in SourceSite.knownValues.skip(1)) {
@@ -119,14 +110,11 @@ void main() {
       }
       return;
     }
-    await select('黄豆');
-    expect(find.byTooltip('VIP：显示'), findsOneWidget);
-    await tester.tap(find.byTooltip('VIP：显示'));
-    await tester.pumpAndSettle();
-    expect(store.hideVip, isTrue);
     await select('红果');
-    expect(find.text('会员合成剧'), findsOneWidget);
+    // 0.7.48：VIP 标记原本只由黄豆站源产生，黄豆移除后没有任何站源会给出
+    // VIP 标记，因此 VIP 过滤入口整体收起，会员剧不再被过滤掉。
     expect(find.textContaining('VIP：'), findsNothing);
+    expect(find.text('会员合成剧'), findsOneWidget);
   });
 
   for (final layout in [
@@ -158,15 +146,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       Size? catalogSize;
-      for (var tab = 1; tab < 4; tab++) {
-        if (tab > 1) {
+      for (var tab = 0; tab < 3; tab++) {
+        if (tab > 0) {
           final destination = layout.$3
               ? find.byKey(ValueKey('tv-nav-$tab'))
               : layout.$1.width < 840
               ? find.byKey(ValueKey('bottom-nav-$tab'))
               : find.descendant(
                   of: find.byType(NavigationRail),
-                  matching: find.text(tab == 2 ? '追剧' : '最近观看'),
+                  matching: find.text(tab == 1 ? '追剧' : '最近观看'),
                 );
           await tester.tap(destination);
           await tester.pumpAndSettle();
@@ -262,4 +250,35 @@ void main() {
       },
     );
   }
+
+  testWidgets('desktop source picker opens from rail and switches group', (
+    tester,
+  ) async {
+    // 0.7.55：站源胶囊移出标题栏，桌面端从左侧栏「站源」入口弹菜单选择。
+    viewport(tester, const Size(1280, 800));
+    final repository = InterfaceRepository();
+    await tester.pumpWidget(
+      DuanjuApp(repository: repository, store: await localStore()),
+    );
+    await tester.pumpAndSettle();
+
+    final entry = find.byKey(const ValueKey('rail-sources'));
+    expect(entry, findsOneWidget);
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+
+    // 菜单打开：站源条目按 key 精确匹配（手机版式的站源胶囊行在测试
+    // 环境也会渲染，不能按文字找）。0.7.58：站源只做互斥单选，
+    // 「全部站源」多选项已删除。
+    final item = find.byKey(const ValueKey('source-menu-hongguo'));
+    expect(item, findsOneWidget);
+    expect(find.byKey(const ValueKey('source-menu-all')), findsNothing);
+
+    // 点站源 → 菜单关闭，不抛异常。
+    await tester.tap(item);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('source-menu-hongguo')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

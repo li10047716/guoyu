@@ -1,10 +1,10 @@
-import 'package:duanju_app/batch_download_screen.dart';
-import 'package:duanju_app/follow_state.dart';
-import 'package:duanju_app/home_screen.dart';
-import 'package:duanju_app/local_store.dart';
-import 'package:duanju_app/models.dart';
-import 'package:duanju_app/saved_library.dart';
-import 'package:duanju_app/widgets.dart';
+import 'package:duanju_app/downloads/batch_download_screen.dart';
+import 'package:duanju_app/core/follow_state.dart';
+import 'package:duanju_app/ui/home_screen.dart';
+import 'package:duanju_app/core/local_store.dart';
+import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/core/saved_library.dart';
+import 'package:duanju_app/ui/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -86,7 +86,7 @@ void main() {
   );
 
   testWidgets(
-    'follow filters show unread updates until explicitly marked read',
+    'follow tile shows unread updates until explicitly marked read',
     (tester) async {
       viewport(tester, const Size(390, 844));
       final store = await create();
@@ -114,18 +114,16 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final filter = find.byKey(const ValueKey('follow-filter-updates'));
-      await tester.ensureVisible(filter);
-      await tester.tap(filter);
-      await tester.pumpAndSettle();
       expect(find.byKey(ValueKey('saved-${first.id}')), findsOneWidget);
-      expect(find.byKey(ValueKey('saved-${second.id}')), findsNothing);
+      expect(find.byKey(ValueKey('saved-${second.id}')), findsOneWidget);
+      expect(find.textContaining('更新 3 集'), findsOneWidget);
       await tester.tap(find.byKey(ValueKey('drama-actions-${first.id}')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('标记 3 集更新已读'));
       await tester.pumpAndSettle();
       expect(store.following(first.id)!.newEpisodes, 0);
-      expect(find.text('没有匹配的记录'), findsOneWidget);
+      expect(find.textContaining('更新 3 集'), findsNothing);
+      expect(find.byKey(ValueKey('saved-${first.id}')), findsOneWidget);
       expect(store.history, isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -193,7 +191,7 @@ void main() {
       final repository = LibraryFeatureRepository();
       await tester.pumpWidget(
         MaterialApp(
-          home: HomeScreen(repository: repository, store: store, initialTab: 1),
+          home: HomeScreen(repository: repository, store: store, initialTab: 0),
         ),
       );
       await tester.pumpAndSettle();

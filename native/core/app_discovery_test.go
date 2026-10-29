@@ -28,7 +28,7 @@ func TestNativeCategoryAliasesAndDetailPersistence(t *testing.T) {
 	drama := nativeDrama{ID: "hongguo:100", Source: sourceHongguo, Title: "旧名称", Category: "旧分类"}
 	engine.catalogs[sourceHongguo] = []nativeDrama{drama}
 	engine.catalogs["hongguo|short_play"] = []nativeDrama{drama}
-	engine.categoryOptions = map[string][]nativeCategory{sourceHuangguoVideo: {{ID: "2", Name: "合成分类"}}}
+	engine.categoryOptions = map[string][]nativeCategory{sourceHanxiaoquan: {{ID: "2", Name: "合成分类"}}}
 	drama.Title, drama.Category = "新名称", "新分类"
 	engine.saveDetailMetadata(drama)
 	restored := &nativeEngine{directory: engine.directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
@@ -38,7 +38,7 @@ func TestNativeCategoryAliasesAndDetailPersistence(t *testing.T) {
 			t.Fatal("category copy lost metadata")
 		}
 	}
-	if len(restored.categoryOptions[sourceHuangguoVideo]) != 1 {
+	if len(restored.categoryOptions[sourceHanxiaoquan]) != 1 {
 		t.Fatal("updating metadata erased source categories")
 	}
 }
@@ -52,20 +52,6 @@ func TestNativeRankingPermissionsAndPersistentCache(t *testing.T) {
 	}
 	if nativeAuthorizeInput(nativeInput{Action: "rankings", Board: "unknown"}) == nil {
 		t.Fatal("unknown board accepted")
-	}
-	board, _ := findRankingBoard("hongguo-hot")
-	d := rankingTestDownloader(t, func(request *http.Request) (*http.Response, error) {
-		return rankingHTTPResponse(request, 200, rankingFixture(board, 1, rankingRows(1))), nil
-	})
-	first, err := d.loadRankingPage(context.Background(), board, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored := &Downloader{cfg: d.cfg}
-	restored.loadRankingCache()
-	page, err := restored.loadRankingPage(context.Background(), board, 1, false)
-	if err != nil || len(page.Items) != len(first.Items) || page.Items[0].Rank != 1 {
-		t.Fatal("ranking cache did not survive restart", err)
 	}
 }
 
@@ -121,21 +107,5 @@ func TestNativeHEICPreparationUsesBoundedSyntheticData(t *testing.T) {
 	stream, err := os.ReadFile(input)
 	if err != nil || !bytes.Equal(stream, want) {
 		t.Fatal("prepared HEVC was not readable", err)
-	}
-}
-
-func TestNativeCoverMetadataRejectsOtherDramaAndKeepsCurrentHost(t *testing.T) {
-	patch := Drama{ID: "huangguoai:100", Source: sourceHuangguoAI, SourceID: "100"}
-	body := `<script type="application/ld+json">{"@type":"VideoObject","url":"/detail/100/","name":"合成剧目","thumbnailUrl":"https://new-cover.example.test/synthetic.jpg"}</script>`
-	fresh, err := parseHuangguoSortDetail(body, "https://huangguoai.com/detail/100/", patch)
-	if err != nil || nativeNormalize(fresh).Cover != "https://new-cover.example.test/synthetic.jpg" {
-		t.Fatal("new image host rejected", err)
-	}
-	if _, err := parseHuangguoSortDetail(strings.ReplaceAll(body, "/detail/100/", "/detail/101/"), "https://huangguoai.com/detail/100/", patch); err == nil {
-		t.Fatal("another drama's cover accepted")
-	}
-	d := &Downloader{providerHosts: map[string]string{sourceHuangdou: "https://mirror.example.test"}}
-	if got := nativeCoverReferer(d, sourceHuangdou, "https://new-cover.example.test/synthetic.img"); got != "https://mirror.example.test/home" {
-		t.Fatal("cover referer ignored active source mirror", got)
 	}
 }
