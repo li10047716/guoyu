@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.71+131** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.72+132** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,7 +14,20 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.71）
+## 二、本次更新（0.7.72）
+
+搜索可以**自己选书源**了 —— 之前是「内置源 + 所有启用的自定义源」一把梭，看不出各自搜了没。
+
+- **搜索框下面多了一排书源标签**：`内置` + 每个可用的自定义书源，点一下切换参与/不参与，
+  选择会记住（下次打开还是上次那套）。
+- **结果为空时不再只说「没找到」**：会写明「已在 N 个书源里搜过」，
+  提示你多勾几个源或换关键词。
+- **跑不了的源也交代清楚**：筛选条右侧显示「N 个源不可用」，点进去就是书源管理，
+  能看到每个源的状态（需要 XPath / 规则不全 / 可用）和原因，开关也在那里。
+- **一个都没勾时直接拦住**，不再空跑一次、白等 20 秒。
+- 结果列表里每条的历史行为不变：副标题照样标出自定义书源名。
+
+### 0.7.71：番茄小说(APP) 书源跑通
 
 **番茄小说（APP 接口）书源跑通了** —— 这类源要签名（x-argus / x-ladon）和 DH 通道解密，
 依赖一整套 Java 类库语义，之前卡在第一步。
@@ -679,6 +692,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 | --- | --- | --- |
 | 0.7.70 | 2026-10-29 | 小说：书源脚本补 jsoup（org.jsoup、元素级 result、Elements 集合）与 Java 类库子集（String/Arrays/Base64/MessageDigest/BigInteger/Cipher/GZIP…），顶层 return 兼容、选择器容错；实测全链路通过源 5 → 7 |
 | 0.7.71 | 2026-10-29 | 小说：书源请求包上限 1MB→16MB、jsLib 原生侧缓存；`String.getBytes(charset)` 按字符集编码（修 AES 块长度报错）；补 `java.net.URL`/`HttpURLConnection`、`BigInteger.modPow`、`SecureRandom.generateSeed`、`source.put`、`data:` 内联地址；**番茄小说(APP) 源全链路跑通** |
+| 0.7.72 | 2026-10-29 | 小说：搜索面板加书源选择器（内置 + 自定义源逐个勾选、选择持久化）、空结果提示「已搜 N 个源」、不可用源计数入口；一个都没勾时拦住搜索 |
 | 0.7.69 | 2026-10-29 | 小说：书源内置 JS 引擎（goja，三端共用）——`@js:` 规则、同步 `java.ajax/post`、base64/md5/cookie/变量、列表规则返回 JSON 数组、`result` 语义对齐；修相对 searchUrl、中文 header 崩溃、可选 JS 字段误判、POST 重定向 |
 | 0.7.50 | 2026-10-28 | 新增站源奈飞工厂（电影 / 连续剧 / 漫剧 / 综艺 / 纪录片五档全接入，列表走 JSON 接口，多线路自动兜底，直链 m3u8） |
 | 0.7.51 | 2026-10-28 | 奈飞工厂搜索改走结果页，可翻页到全量（原来联想接口硬上限 20 条且不分页） |

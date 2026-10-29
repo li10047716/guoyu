@@ -33,21 +33,41 @@ class NovelGateway {
   /// 最近一次搜索里失败的书源，便于界面提示「某些源没返回」。
   final List<BookSourceFailure> lastFailures = [];
 
-  /// 搜索：内置站源 + 所有启用的自定义书源。
-  Future<List<Novel>> search(String query, {bool includeCustom = true}) async {
+  /// 最近一次搜索实际用到的书源名（内置 + 自定义），界面用来提示「搜了哪些源」。
+  final List<String> lastSources = [];
+
+  /// 搜索：内置站源 + 选中的自定义书源。
+  ///
+  /// [includeNative] 为假时不打内置源；[customKeys] 为 null 表示所有启用且可用的
+  /// 自定义源，否则只搜其中这些 key。
+  Future<List<Novel>> search(
+    String query, {
+    bool includeCustom = true,
+    bool includeNative = true,
+    Set<String>? customKeys,
+  }) async {
     lastFailures.clear();
+    lastSources.clear();
     final results = <Novel>[];
 
-    try {
-      results.addAll(await native.novelSearch(query));
-    } catch (error) {
-      debugPrint('内置源搜索失败：$error');
+    if (includeNative) {
+      lastSources.add('内置');
+      try {
+        results.addAll(await native.novelSearch(query));
+      } catch (error) {
+        debugPrint('内置源搜索失败：$error');
+      }
     }
 
     if (includeCustom) {
       await store.ensureLoaded();
-      final sources = store.usableSources;
+      final sources = store.usableSources
+          .where(
+            (source) => customKeys == null || customKeys.contains(source.key),
+          )
+          .toList(growable: false);
       if (sources.isNotEmpty) {
+        lastSources.addAll(sources.map((source) => source.name));
         final batches = await Future.wait([
           for (final source in sources) _searchOne(source, query),
         ]);
@@ -102,7 +122,7 @@ class NovelGateway {
       throw AppFailure('书源已被删除，无法打开这本书');
     }
     if (!source.status.usable) {
-      throw AppFailure('这个书源需要 JS 引擎，当前版本跑不了');
+      throw AppFailure('这个书源当前不可用：${source.statusDetail}');
     }
     return source;
   }

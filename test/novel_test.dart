@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/book_source_store.dart';
 import 'package:duanju_app/novel/novel_detail_screen.dart';
 import 'package:duanju_app/novel/novel_home_screen.dart';
 import 'package:duanju_app/novel/novel_library.dart';
@@ -176,6 +177,37 @@ void main() {
     expect(repository.searches, 1);
     expect(repository.lastQuery, '合成');
     expect(find.text('合成小说'), findsOneWidget);
+  });
+
+  testWidgets('搜索面板能选书源：一个都没选时拦住搜索', (tester) async {
+    BookSourceStore.instance.debugSetDir(null);
+    final repository = _NovelRepository();
+    await tester.pumpWidget(
+      MaterialApp(home: NovelHomeScreen(repository: repository)),
+    );
+    await _settle(tester);
+
+    await tester.tap(find.byKey(const ValueKey('novel-search-open')));
+    await _settle(tester);
+
+    final nativeChip = find.byKey(const ValueKey('novel-search-source-native'));
+    expect(nativeChip, findsOneWidget);
+    expect(find.text('当前搜索范围：内置'), findsOneWidget);
+
+    await tester.tap(nativeChip);
+    await _settle(tester);
+    expect(find.text('还没选书源，点上面的标签勾一个'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('novel-search-field')),
+      '合成',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await _settle(tester);
+
+    // 没有勾任何源时不该发请求，而是提示先选源。
+    expect(repository.searches, 0);
+    expect(find.text('先在搜索框上方选一个书源'), findsOneWidget);
   });
 
   testWidgets('详情页显示目录，点「开始阅读」进阅读器', (tester) async {

@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
@@ -89,6 +91,13 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   /// 搜索以覆盖层方式占满内容区（不是独立页面，切分区时自动关掉）。
   bool _searchOpen = false;
 
+  /// 搜索用的书源选择：内置源是否参与、自定义源选哪几个（null = 全部启用的源）。
+  bool _searchNative = true;
+  Set<String>? _searchCustomKeys;
+
+  /// 上次搜索实际用到的源数量，结果区下面用来提示。
+  int _searchSourceCount = 0;
+
   static const _hotKeywords = ['玄幻', '都市', '穿越', '重生', '系统', '剑来', '诡秘'];
 
   /// 宽屏阈值：够宽就竖排导航，窄了退回顶部横排。
@@ -98,6 +107,79 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   void initState() {
     super.initState();
     NovelStore.instance.ensureLoaded();
+    unawaited(_loadSearchSources());
+  }
+
+  /// 搜索源选择的偏好键（记住上次选了哪些源）。
+  static const _searchPrefsKey = 'novel.searchSources.v1';
+
+  Future<void> _loadSearchSources() async {
+    await BookSourceStore.instance.ensureLoaded();
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final raw = preferences.getString(_searchPrefsKey);
+      if (raw == null || raw.isEmpty) return;
+      final data = jsonDecode(raw);
+      if (data is! Map) return;
+      if (!mounted) return;
+      setState(() {
+        _searchNative = data['native'] != false;
+        final custom = data['custom'];
+        // `*` 表示「全部启用的自定义源」，不记具体 key，新增源自动纳入。
+        _searchCustomKeys = custom == '*'
+            ? null
+            : custom is List
+            ? {for (final item in custom) '$item'}
+            : null;
+      });
+    } catch (_) {
+      // 偏好坏了就当全选，不影响搜索。
+    }
+  }
+
+  Future<void> _saveSearchSources() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString(
+        _searchPrefsKey,
+        jsonEncode({
+          'native': _searchNative,
+          'custom': _searchCustomKeys == null
+              ? '*'
+              : _searchCustomKeys!.toList(),
+        }),
+      );
+    } catch (_) {
+      // 存不下只是下次要重选，不影响本次搜索。
+    }
+  }
+
+  /// 实际生效的自定义源 key（null = 全部可用源）。
+  Set<String>? _effectiveCustomKeys() {
+    if (_searchCustomKeys == null) return null;
+    final available = {
+      for (final source in BookSourceStore.instance.usableSources) source.key,
+    };
+    return _searchCustomKeys!.where(available.contains).toSet();
+  }
+
+  void _toggleSearchNative() {
+    setState(() => _searchNative = !_searchNative);
+    unawaited(_saveSearchSources());
+  }
+
+  void _toggleSearchSource(String key) {
+    final available = [
+      for (final source in BookSourceStore.instance.usableSources) source.key,
+    ];
+    final current = _searchCustomKeys ?? available.toSet();
+    final next = {...current};
+    if (!next.remove(key)) next.add(key);
+    setState(() {
+      // 全选也存成 null，这样以后新加的源默认参与。
+      _searchCustomKeys = next.length == available.length ? null : next;
+    });
+    unawaited(_saveSearchSources());
   }
 
   @override
@@ -128,6 +210,22 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   Future<void> _runSearch(String keyword) async {
     final query = keyword.trim();
     if (query.isEmpty) return;
+    await BookSourceStore.instance.ensureLoaded();
+    if (!mounted) return;
+    final customKeys = _effectiveCustomKeys();
+    final customCount = customKeys == null
+        ? BookSourceStore.instance.usableSources.length
+        : customKeys.length;
+    if (!_searchNative && customCount == 0) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(
+          content: Text('先在搜索框上方选一个书源'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
     _search.text = query;
     _focus.unfocus();
     setState(() {
@@ -136,14 +234,22 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       _searched = true;
     });
     try {
-      final items = await _gateway.search(query);
+      final items = await _gateway.search(
+        query,
+        includeNative: _searchNative,
+        customKeys: customKeys,
+      );
       if (!mounted) return;
       setState(() {
         _results = items;
         _searching = false;
+        _searchSourceCount = _gateway.lastSources.length;
       });
       if (_gateway.lastFailures.isNotEmpty) {
-        final names = _gateway.lastFailures.take(3).map((f) => f.sourceName).join('、');
+        final names = _gateway.lastFailures
+            .take(3)
+            .map((f) => f.sourceName)
+            .join('、');
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
           SnackBar(
             content: Text('$names 没有返回结果'),
@@ -181,9 +287,9 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   Future<void> _openBookSources() async {
     await BookSourceStore.instance.ensureLoaded();
     if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const BookSourceScreen()),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const BookSourceScreen()));
   }
 
   void _notYet(String label) {
@@ -231,7 +337,9 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       padding: const EdgeInsets.only(top: 20, bottom: 12),
       decoration: BoxDecoration(
         border: Border(
-          right: BorderSide(color: colors.outlineVariant.withValues(alpha: .55)),
+          right: BorderSide(
+            color: colors.outlineVariant.withValues(alpha: .55),
+          ),
         ),
       ),
       child: Column(
@@ -467,7 +575,12 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        Container(height: 36, width: 36, decoration: pill, child: _moreMenu(context)),
+        Container(
+          height: 36,
+          width: 36,
+          decoration: pill,
+          child: _moreMenu(context),
+        ),
       ],
     );
   }
@@ -721,7 +834,9 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('从书架移除'),
-        content: Text('确定移除选中的 ${_selected.length} 本书？阅读进度会一起清掉，本地导入的书会删除磁盘文件。'),
+        content: Text(
+          '确定移除选中的 ${_selected.length} 本书？阅读进度会一起清掉，本地导入的书会删除磁盘文件。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -780,9 +895,9 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text('打开文件选择器失败：$error')),
-      );
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text('打开文件选择器失败：$error')));
       return;
     }
     if (files.isEmpty || !mounted) return;
@@ -949,6 +1064,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
             ),
           ),
         ),
+        _searchSourceBar(colors),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
           child: Wrap(
@@ -967,6 +1083,100 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         Expanded(child: _searchBody(colors)),
       ],
     );
+  }
+
+  /// 搜索框下面那行「搜索哪些源」：内置 + 每个可用自定义源，点一下切换。
+  Widget _searchSourceBar(ColorScheme colors) {
+    final store = BookSourceStore.instance;
+    return AnimatedBuilder(
+      animation: store,
+      builder: (context, _) {
+        final custom = store.usableSources;
+        final chosen = _searchCustomKeys;
+        return SizedBox(
+          height: 42,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+            children: [
+              FilterChip(
+                key: const ValueKey('novel-search-source-native'),
+                label: const Text('内置', style: TextStyle(fontSize: 12)),
+                selected: _searchNative,
+                onSelected: (_) => _toggleSearchNative(),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              for (final source in custom) ...[
+                const SizedBox(width: 8),
+                FilterChip(
+                  key: ValueKey('novel-search-source-${source.key}'),
+                  label: Text(
+                    source.name,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  selected: chosen == null || chosen.contains(source.key),
+                  onSelected: (_) => _toggleSearchSource(source.key),
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ],
+              if (custom.isEmpty) ...[
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: () => unawaited(_openBookSources()),
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text('添加书源', style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: colors.primary,
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  key: const ValueKey('novel-search-source-manage'),
+                  tooltip: '管理书源',
+                  onPressed: () => unawaited(_openBookSources()),
+                  icon: const Icon(Icons.tune_rounded, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+              // 有源因为规则问题跑不了时给个明示，否则用户会以为「只搜了内置」。
+              if (store.enabledSources.length > custom.length) ...[
+                const SizedBox(width: 4),
+                TextButton(
+                  key: const ValueKey('novel-search-source-unusable'),
+                  onPressed: () => unawaited(_openBookSources()),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: colors.onSurfaceVariant,
+                    textStyle: const TextStyle(fontSize: 12),
+                  ),
+                  child: Text(
+                    '${store.enabledSources.length - custom.length} 个源不可用',
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 空态里那句「当前搜索范围」。
+  String _sourceSummary() {
+    final custom = BookSourceStore.instance.usableSources;
+    final picked = _searchCustomKeys == null
+        ? custom.length
+        : (_effectiveCustomKeys()?.length ?? 0);
+    final parts = <String>[
+      if (_searchNative) '内置',
+      if (picked > 0) '$picked 个自定义源',
+    ];
+    if (parts.isEmpty) return '还没选书源，点上面的标签勾一个';
+    return '当前搜索范围：${parts.join(' + ')}';
   }
 
   Widget _searchBody(ColorScheme colors) {
@@ -992,14 +1202,16 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       return _EmptyState(
         icon: Icons.search_rounded,
         title: '输入书名或作者开始找书',
-        hint: '内置书源：笔趣阁',
+        hint: _sourceSummary(),
       );
     }
     if (_results.isEmpty) {
       return _EmptyState(
         icon: Icons.search_off_rounded,
         title: '没有找到这本书',
-        hint: '换个关键词试试，或者直接搜作者名',
+        hint: _searchSourceCount > 0
+            ? '已在 $_searchSourceCount 个书源里搜过：换个关键词，或者在上面多勾几个源'
+            : '换个关键词试试，或者直接搜作者名',
       );
     }
     return ListView.separated(
@@ -1784,7 +1996,6 @@ class _RankRow extends StatelessWidget {
     );
   }
 }
-
 
 /// 探索：热词墙 + 榜单占位。
 class _ExplorePage extends StatelessWidget {
