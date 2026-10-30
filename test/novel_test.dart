@@ -76,6 +76,9 @@ class _FakeEngine extends BookSourceEngine {
   /// 详情返回的书；测试里换成带真实 `bs.` id 的那本，否则阅读器解不出章节地址。
   Novel? book;
 
+  /// 正文段落；分页测试里换成长文本以撑出多页。
+  List<String> paragraphs = const ['第一段正文文案', '第二段正文文案'];
+
   int searches = 0;
   int detailCalls = 0;
   int contentCalls = 0;
@@ -117,7 +120,7 @@ class _FakeEngine extends BookSourceEngine {
       bookId: bookId,
       chapterId: chapterUrl,
       title: '第1章 开局',
-      paragraphs: const ['第一段正文文案', '第二段正文文案'],
+      paragraphs: paragraphs,
     );
   }
 }
@@ -370,8 +373,10 @@ void main() {
 
     // ignore: avoid_print
     expect(engine.contentCalls, 1);
-    expect(find.text('第一段正文文案'), findsOneWidget);
-    expect(find.text('1 / 3'), findsOneWidget);
+    // 0.7.86：正文改成 CustomPaint 按行窗口绘制（精确分页），不再是 Text，
+    // 所以这里验证分页容器 + 底栏的章节进度文案。
+    expect(find.byKey(const ValueKey('novel-page-view')), findsOneWidget);
+    expect(find.textContaining('第 1 章'), findsOneWidget);
   });
 
   testWidgets('阅读器：下一章切换章节并推进进度', (tester) async {
@@ -398,15 +403,126 @@ void main() {
     );
     await _settle(tester);
 
-    expect(find.text('第一段正文文案'), findsOneWidget);
-    // 控件默认可见，底栏有「下一章」。
+    expect(find.byKey(const ValueKey('novel-page-view')), findsOneWidget);
+    // 0.7.86：进入阅读页就是沉浸态，先点屏幕中间呼出底栏。
+    await tester.tapAt(
+      tester.getCenter(find.byKey(const ValueKey('novel-page-view'))),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('下一章').last);
     await _settle(tester);
 
     expect(engine.contentCalls, 2);
-    expect(find.text('2 / 3'), findsOneWidget);
+    expect(find.textContaining('第 2 章'), findsOneWidget);
     expect(NovelStore.instance.progressOf(novel.key)!.chapterIndex, 1);
   });
+  testWidgets('分页阅读：点右侧翻下一页，点左侧翻回上一页', (tester) async {
+    final repository = _NovelRepository();
+    final source = await _seedSource();
+    final engine = _FakeEngine()
+      ..paragraphs = List.generate(
+        30,
+        (i) => '这是第 $i 段正文，长度足够把一章撑成好几页。' * 3,
+      );
+    final chapters = _chaptersOf(source);
+    final novel = Novel(
+      id: BookSourceIds.encode(source.key, 'https://example.com/book/1'),
+      source: source.sourceTag,
+      title: '合成小说',
+      chapters: 3,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NovelReaderScreen(
+          novel: novel,
+          chapters: chapters,
+          repository: repository,
+          gateway: NovelGateway(engine: engine),
+        ),
+      ),
+    );
+    await _settle(tester);
+
+    String barLabel() {
+      final widget = tester.widget<Text>(find.textContaining('页 · 第'));
+      return widget.data ?? '';
+    }
+
+    // 默认就是分页模式，底栏显示「1/N 页 · 第 1 章」。
+    expect(barLabel(), startsWith('1/'));
+    expect(barLabel(), endsWith('第 1 章'));
+
+    final size = tester.view.physicalSize / tester.view.devicePixelRatio;
+    // 点右侧三分之一：下一页。
+    await tester.tapAt(Offset(size.width * .85, size.height * .4));
+    await tester.pumpAndSettle();
+    expect(barLabel(), startsWith('2/'));
+
+    // 点左侧三分之一：回上一页。
+    await tester.tapAt(Offset(size.width * .1, size.height * .4));
+    await tester.pumpAndSettle();
+    expect(barLabel(), startsWith('1/'));
+  });
+
+  testWidgets('手机竖屏 360x780 下分页正常，无布局溢出', (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final repository = _NovelRepository();
+    final source = await _seedSource();
+    final engine = _FakeEngine()
+      ..paragraphs = List.generate(
+        20,
+        (i) => '这是手机上用来验证分页的第 $i 段正文，长度足够跨好几页。' * 4,
+      );
+    final chapters = _chaptersOf(source);
+    final novel = Novel(
+      id: BookSourceIds.encode(source.key, 'https://example.com/book/1'),
+      source: source.sourceTag,
+      title: '合成小说',
+      chapters: 3,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NovelReaderScreen(
+          novel: novel,
+          chapters: chapters,
+          repository: repository,
+          gateway: NovelGateway(engine: engine),
+        ),
+      ),
+    );
+    await _settle(tester);
+
+    // 窄屏上必定排成多页；有 RenderFlex 溢出会在这里抛出来。
+    expect(tester.takeException(), isNull);
+    final label = tester
+        .widget<Text>(find.textContaining('页 · 第'))
+        .data!;
+    final pages = RegExp(r'/(\d+) 页').firstMatch(label)!.group(1)!;
+    expect(int.parse(pages), greaterThan(1));
+    expect(label, endsWith('第 1 章'));
+  });
+
+  test('老阅读设置自动升级为左右翻页，带版本号后尊重用户选择', () {
+    // 0.7.85 之前的存档：没有 layoutVersion，pageMode=scroll。
+    final legacy = NovelReaderSettings.fromJson({
+      'fontScale': 1.2,
+      'pageMode': 'scroll',
+    });
+    expect(legacy.pageMode, NovelPageMode.slide);
+    expect(legacy.fontScale, closeTo(1.2, .001), reason: '其余设置要保留');
+
+    // 已经是新版结构：用户手动选回滚动就照办。
+    final current = NovelReaderSettings.fromJson({
+      'pageMode': 'scroll',
+      'layoutVersion': NovelReaderSettings.layoutVersion,
+    });
+    expect(current.pageMode, NovelPageMode.scroll);
+  });
+
   test('自定义分组：归档、删除分组后书回到全部', () async {
     final store = NovelStore.instance;
     await store.ensureLoaded();
@@ -499,6 +615,6 @@ void main() {
     expect(repository.localContentCalls, 1);
     // 本地书不碰规则引擎。
     expect(engine.contentCalls, 0);
-    expect(find.text('本地正文文案'), findsOneWidget);
+    expect(find.byKey(const ValueKey('novel-page-view')), findsOneWidget);
   });
 }

@@ -3,24 +3,29 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
 import 'package:duanju_app/novel/booksource/novel_gateway.dart';
 import 'package:duanju_app/novel/novel_library.dart';
+import 'package:duanju_app/novel/novel_pagination.dart';
 import 'package:duanju_app/novel/novel_store.dart';
+import 'package:duanju_app/platform/desktop_title_bar.dart';
 
-/// 小说阅读页（0.7.61）。
+/// 小说阅读页。
 ///
-/// 设计要点：
-/// - **一页到底的竖向滚动**：不做仿真翻页（桌面端滚轮/触屏都更自然），
-///   章末给「下一章」按钮，读完不用退回目录。
-/// - **点一下画面呼出控件**：顶栏（返回 + 章节名）与底栏（上一章/目录/下一章/
-///   设置/进度）平时隐藏，避免阅读时被 UI 干扰。
-/// - **进度记忆**：切章与退出时把「章节 + 章内滚动偏移」写进 [NovelStore]，
-///   下次从书架点进来直接续读。
+/// 0.7.86 按手机阅读器的形态重做：
+/// - **默认左右翻页**：整章精确分页（[NovelPagination]），一屏一页，不再像
+///   浏览器那样整章竖着滚。
+/// - **点屏幕翻页**：左侧三分之一上一页、右侧三分之一下一页、中间呼出控件，
+///   和主流阅读 App 一致；也能直接左右滑动。
+/// - **跨章衔接**：本章最后一页再往后翻自动进下一章；第一页往前翻回上一章末页。
+/// - **沉浸式**：手机上隐藏状态栏与导航栏，桌面上连标题栏一起收起。
+/// - **进度记忆**：分页模式下记「第几页」，滚动模式下仍记像素偏移。
 /// - **外观设置**：字号 / 行距 / 四种配色（夜间、墨色、羊皮纸、护眼绿），
 ///   存在本地，全局生效。
 class NovelReaderScreen extends StatefulWidget {
@@ -59,12 +64,33 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
   NovelText? _text;
   String? _error;
   bool _loading = true;
-  bool _controls = true;
+
+  /// 0.7.86：进来就是沉浸阅读，点屏幕中间才呼出顶栏 / 底栏。
+  bool _controls = false;
   double _pendingOffset = 0;
 
   /// 左右翻页模式下的页码与总页数（由 [_slideBody] 计算后回填）。
   int _pageIndex = 0;
   int _pageCount = 1;
+
+  /// 当前章的排版结果缓存：窗口尺寸 / 字号 / 行距 / 配色任一变化就重排。
+  NovelPagination? _paging;
+  String _pagingSignature = '';
+
+  /// 切章后要落到「最后一页」（往回翻上一章时用）。
+  bool _pendingLastPage = false;
+
+  /// 续读时要定位到的页码（分页模式）。
+  int? _pendingPage;
+
+  /// 本页作为持有者隐藏桌面标题栏，退出时释放。
+  ///
+  /// 只在手机端隐藏：桌面端标题栏是唯一的关闭按钮入口，藏了就没法关窗口
+  /// （阅读页不像播放页那样有全屏概念）。
+  final Object _titleBarOwner = Object();
+
+  /// 上一次见到的设置快照，用来区分「改外观」和「只更新了进度」。
+  NovelReaderSettings? _lastSettings;
 
   NovelStore get _store => NovelStore.instance;
   NovelReaderTheme get _theme => _store.settings.theme;
@@ -73,7 +99,13 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
   void initState() {
     super.initState();
     _pendingOffset = widget.initialOffset;
+    _lastSettings = _store.settings;
     _store.addListener(_onSettingsChanged);
+    _enterImmersive();
+    // 桌面端不藏标题栏：那是唯一的关闭窗口入口（阅读页没有全屏概念）。
+    if (Platform.isAndroid || Platform.isIOS) {
+      TitleBarSlot.instance.setHidden(_titleBarOwner, true);
+    }
     _load(_index);
   }
 
@@ -81,16 +113,63 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
   void dispose() {
     _store.removeListener(_onSettingsChanged);
     _persistProgress();
+    _exitImmersive();
+    TitleBarSlot.instance.setHidden(_titleBarOwner, false);
     _scroll.dispose();
     _pager.dispose();
+    _paging?.dispose();
     super.dispose();
   }
 
+  /// 手机上进入沉浸式：隐藏状态栏和底部手势条，只留正文。
+  void _enterImmersive() {
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    _syncStatusBarStyle();
+  }
+
+  void _exitImmersive() {
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  }
+
+  /// 深色主题用白色状态栏图标，浅色主题（羊皮纸/护眼绿）用黑色。
+  void _syncStatusBarStyle() {
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    final palette = _theme;
+    // 背景亮度 > .5 视为浅色底。
+    final luminance =
+        (0.299 * ((palette.background >> 16) & 0xff) +
+            0.587 * ((palette.background >> 8) & 0xff) +
+            0.114 * (palette.background & 0xff)) /
+        255;
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: luminance > .5
+            ? Brightness.dark
+            : Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+      ),
+    );
+  }
+
   void _onSettingsChanged() {
+    final next = _store.settings;
+    // 翻页时也会 saveProgress → notifyListeners，那不是外观改动，
+    // 没必要整页重建（分页缓存虽在，PageView 重建仍有掉帧风险）。
+    if (identical(next, _lastSettings)) return;
+    _lastSettings = next;
+    // 换配色后状态栏图标要跟着反色，否则浅色底上白图标看不见。
+    _syncStatusBarStyle();
     if (mounted) setState(() {});
   }
 
-  Future<void> _load(int index, {double offset = 0}) async {
+  Future<void> _load(
+    int index, {
+    double offset = 0,
+    bool jumpToLast = false,
+  }) async {
     if (_chapters.isEmpty) return;
     setState(() {
       _loading = true;
@@ -98,6 +177,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
       _index = index.clamp(0, _chapters.length - 1);
       _pendingOffset = offset;
       _pageIndex = 0;
+      _pendingLastPage = jumpToLast;
+      // 分页模式下 initialOffset 存的是页码，滚动模式才是像素。
+      _pendingPage = (!jumpToLast && offset > 0) ? offset.round() : null;
     });
     try {
       final chapter = _chapters[_index];
@@ -109,7 +191,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
       });
       if (_pager.hasClients) _pager.jumpToPage(0);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scroll.hasClients) return;
+        if (!mounted) return;
+        if (_store.settings.pageMode == NovelPageMode.slide) {
+          // 分页模式下由 _slideBody 排完版再定位，这里只处理滚动模式的偏移。
+          return;
+        }
+        if (!_scroll.hasClients) return;
         final target = _pendingOffset.clamp(
           0.0,
           _scroll.position.maxScrollExtent,
@@ -149,11 +236,15 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
   }
 
   /// 落盘阅读进度。[offsetOverride] 用于刚切章时（滚动位置尚未归位）。
+  ///
+  /// 分页模式下 `offset` 字段存的是页码——两种模式的取值范围不重叠，
+  /// 续读时按当前模式解释即可，不用再拆一个新字段。
   void _persistProgress([double? offsetOverride]) {
     final text = _text;
     if (text == null) return;
-    final offset =
-        offsetOverride ?? (_scroll.hasClients ? _scroll.offset : 0.0);
+    final offset = _store.settings.pageMode == NovelPageMode.slide
+        ? _pageIndex.toDouble()
+        : (offsetOverride ?? (_scroll.hasClients ? _scroll.offset : 0.0));
     unawaited(
       _store.saveProgress(
         widget.novel,
@@ -168,6 +259,39 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
   }
 
   void _toggleControls() => setState(() => _controls = !_controls);
+
+  /// 上一页；已在首页则回上一章的最后一页。
+  void _prevPage() {
+    if (_pageIndex > 0) {
+      _pager.previousPage(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+      return;
+    }
+    if (_index > 0) {
+      _persistProgress();
+      _load(_index - 1, jumpToLast: true);
+      return;
+    }
+    _toggleControls();
+  }
+
+  /// 下一页；已在末页则进下一章。已经是全书最后一页时呼出控件。
+  void _nextPage() {
+    if (_pageIndex < _pageCount - 1) {
+      _pager.nextPage(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+      return;
+    }
+    if (_index < _chapters.length - 1) {
+      _goTo(_index + 1);
+      return;
+    }
+    _toggleControls();
+  }
 
   Future<void> _openCatalog() async {
     final chapter = await showModalBottomSheet<NovelChapterItem>(
@@ -221,13 +345,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
               color: background.withValues(alpha: custom == null ? 1 : .86),
             ),
           ),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _toggleControls,
-            child: SafeArea(
-              bottom: false,
-              child: _body(fontSize, textColor, media),
-            ),
+          // 阅读区自己处理点击（滚动模式点哪都呼出控件，分页模式分三个热区），
+          // 外层不再套 GestureDetector，免得两个 tap 识别器抢同一个手势。
+          SafeArea(
+            bottom: true,
+            child: _readerArea(fontSize, textColor, media),
           ),
           // 亮度：不碰系统亮度（免得要权限），直接盖一层黑遮罩。
           if (settings.brightness < .999)
@@ -298,9 +420,44 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
     }
     final text = _text!;
     if (_store.settings.pageMode == NovelPageMode.slide) {
-      return _slideBody(text, fontSize, textColor, media);
+      return _slideBody(text, fontSize, textColor);
     }
     return _scrollBody(text, fontSize, textColor, media);
+  }
+
+  /// 阅读区：滚动模式点哪都只是呼出控件；分页模式按手机习惯分三个热区。
+  Widget _readerArea(double fontSize, Color textColor, MediaQueryData media) {
+    final body = _body(fontSize, textColor, media);
+    if (_store.settings.pageMode != NovelPageMode.slide) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _toggleControls,
+        child: body,
+      );
+    }
+    return Stack(
+      children: [
+        Positioned.fill(child: body),
+        Positioned.fill(
+          child: Row(
+            children: [
+              Expanded(flex: 3, child: _tapZone(_prevPage)),
+              Expanded(flex: 4, child: _tapZone(_toggleControls)),
+              Expanded(flex: 3, child: _tapZone(_nextPage)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 透明的点击热区：只抢 tap，横向滑动仍然交给下层 PageView。
+  Widget _tapZone(VoidCallback onTap) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: onTap,
+      child: const SizedBox.expand(),
+    );
   }
 
   /// 上下滚动模式（0.7.61 的版式，一页到底）。
@@ -388,126 +545,270 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
     );
   }
 
-  /// 左右翻页模式（0.7.67）：按可用面积把一章切成若干屏，PageView 承载。
+  /// 左右翻页（0.7.86 重做）：整章精确排版后一屏一页。
   ///
-  /// 不做仿真翻书（shader 成本高、桌面端没必要），用标准的横向滑动，
-  /// 鼠标拖拽 / 触屏滑动 / 方向键都能走。
-  Widget _slideBody(
-    NovelText text,
-    double fontSize,
-    Color textColor,
-    MediaQueryData media,
-  ) {
+  /// 页面结构：正文用 [CustomPaint] 按「行窗口」平移绘制——整章只排一次版，
+  /// 翻页只是移动画布，既不会裁掉半行，也不会在滑动时重排卡顿。首页顶部叠
+  /// 章节标题，右下角叠页码；最后一页之后接一张「下一章」过渡页，滑过去就
+  /// 直接往下读，不用先退回去找按钮。
+  Widget _slideBody(NovelText text, double fontSize, Color textColor) {
     final settings = _store.settings;
     final fontFamily = settings.fontFamily.fontFamily;
+    final title = text.title.isNotEmpty
+        ? text.title
+        : (_chapters.length > _index ? _chapters[_index].title : '');
     return LayoutBuilder(
       builder: (context, constraints) {
-        final sidePad = math.max(22.0, (constraints.maxWidth - 760) / 2);
-        final pages = _paginate(
-          paragraphs: text.paragraphs,
-          width: math.max(120.0, constraints.maxWidth - sidePad * 2),
-          height: math.max(160.0, constraints.maxHeight),
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+        // 宽屏（桌面 / 平板）限制正文行宽：一行铺满 2560px 根本没法读。
+        final sidePad = width >= 760 ? (width - 680) / 2 : 22.0;
+        final contentWidth = math.max(160.0, width - sidePad * 2);
+        // 底部留一条给页码，正文最后一行不贴边。
+        const pageGap = 30.0;
+        final contentHeight = math.max(120.0, height - 18 - pageGap);
+        final titleInset = title.isEmpty ? 0.0 : fontSize * 1.45 + 20;
+
+        final paging = _resolvePaging(
+          text: text,
+          title: title,
+          width: contentWidth,
+          height: contentHeight,
           fontSize: fontSize,
           lineHeight: settings.lineHeight,
+          fontFamily: fontFamily,
+          color: textColor,
+          titleInset: titleInset,
         );
-        if (_pageCount != pages.length) {
-          // 分页结果可能随窗口尺寸变化，这里只同步计数，不在 build 里 setState。
-          _pageCount = pages.length;
+
+        final pageCount = paging.pageCount;
+        if (_pageCount != pageCount) {
+          final previous = _pageIndex;
+          _pageCount = pageCount;
+          // 底栏进度依赖页数，排完版补一帧重建（不能在 build 里 setState）。
+          // 改字号 / 转屏都会重排，原页码可能超出新页数，顺手夹回来。
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            final fixed = math.min(previous, pageCount - 1);
+            if (fixed != previous && _pager.hasClients) {
+              _pager.jumpToPage(fixed);
+            }
+            setState(() => _pageIndex = fixed);
+          });
         }
-        return PageView.builder(
-          key: const ValueKey('novel-page-view'),
-          controller: _pager,
-          itemCount: pages.length,
-          onPageChanged: (value) {
-            _pageIndex = value;
-            if (_controls) setState(() {});
-          },
-          itemBuilder: (context, index) {
-            final rows = pages[index];
+        _applyPendingPage(pageCount);
+
+        final canNext = _index < _chapters.length - 1;
+        // 桌面端默认只有触控设备能拖动滚动视图；这里把鼠标 / 触控板也放开，
+        // 否则 Windows 上翻页只能点热区，拖不动。
+        return ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(
+            scrollbars: false,
+            dragDevices: const {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.mouse,
+              PointerDeviceKind.trackpad,
+              PointerDeviceKind.stylus,
+              PointerDeviceKind.invertedStylus,
+            },
+          ),
+          child: PageView.builder(
+            key: const ValueKey('novel-page-view'),
+            controller: _pager,
+            itemCount: pageCount + (canNext ? 1 : 0),
+            onPageChanged: (value) {
+              if (value >= pageCount) {
+                // 滑到过渡页 = 用户明确要往下读，直接进下一章。
+                _goTo(_index + 1);
+                return;
+              }
+              _pageIndex = value;
+              _persistProgress();
+              // 无条件刷新：底栏进度即使在隐藏状态也要保持正确，
+              // 否则用户在别处（如呼出控件瞬间）会看到上一页的数字。
+              setState(() {});
+            },
+            itemBuilder: (context, index) {
+            if (index >= pageCount) {
+              return _chapterBridge(textColor, fontSize);
+            }
+            final slice = paging.slices[index];
+            final canvas = ClipRect(
+              child: CustomPaint(
+                painter: NovelPagePainter(
+                  painter: paging.painter,
+                  top: slice.top,
+                ),
+                size: Size.infinite,
+              ),
+            );
             return Padding(
-              padding: EdgeInsets.fromLTRB(sidePad, 18, sidePad, 18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+              padding: EdgeInsets.fromLTRB(sidePad, 18, sidePad, pageGap),
+              child: Stack(
                 children: [
-                  if (index == 0) ...[
-                    Text(
-                      text.title.isNotEmpty
-                          ? text.title
-                          : _chapters[_index].title,
-                      style: TextStyle(
-                        color: textColor,
-                        fontSize: fontSize + 3,
-                        fontWeight: FontWeight.w700,
-                        height: 1.4,
-                        fontFamily: fontFamily,
+                  if (index == 0 && title.isNotEmpty)
+                    Positioned.fill(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(
+                            height: titleInset,
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: textColor,
+                                fontSize: fontSize + 3,
+                                fontWeight: FontWeight.w700,
+                                height: 1.4,
+                                fontFamily: fontFamily,
+                              ),
+                            ),
+                          ),
+                          Expanded(child: canvas),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  for (final paragraph in rows)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
+                    )
+                  else
+                    Positioned.fill(child: canvas),
+                  if (pageCount > 1)
+                    Positioned(
+                      right: 0,
+                      bottom: -2,
                       child: Text(
-                        paragraph,
+                        '${index + 1}/$pageCount',
                         style: TextStyle(
-                          color: textColor,
-                          fontSize: fontSize,
-                          height: settings.lineHeight,
-                          fontFamily: fontFamily,
+                          color: textColor.withValues(alpha: .3),
+                          fontSize: 11.5,
                         ),
                       ),
                     ),
-                  const Spacer(),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      '${index + 1} / ${pages.length}',
-                      style: TextStyle(
-                        color: textColor.withValues(alpha: .38),
-                        fontSize: 11.5,
-                      ),
-                    ),
-                  ),
                 ],
               ),
             );
           },
+          ),
         );
       },
     );
   }
 
-  /// 按可用面积把段落切成屏（不拆段，按行数估算）。
-  ///
-  /// 中文是等宽方块字，用 `可用宽度 / 字号` 估每行字数足够准确；
-  /// 用 TextPainter 逐段精确测量会让翻页时有明显卡顿，这里不值得。
-  List<List<String>> _paginate({
-    required List<String> paragraphs,
+  /// 章末过渡页：滑到这里就进下一章，也可以点一下「继续阅读」。
+  Widget _chapterBridge(Color textColor, double fontSize) {
+    final next = _index + 1;
+    final title = next < _chapters.length ? _chapters[next].title : '';
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(36),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '下一章',
+              style: TextStyle(
+                color: textColor.withValues(alpha: .45),
+                fontSize: 12.5,
+                letterSpacing: 2,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              key: const ValueKey('novel-chapter-bridge'),
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: textColor,
+                fontSize: fontSize + 1,
+                fontWeight: FontWeight.w600,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 24),
+            OutlinedButton(
+              onPressed: () => _goTo(next),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: textColor,
+                side: BorderSide(color: textColor.withValues(alpha: .25)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 26,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text('继续阅读'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 取当前章的排版结果；窗口尺寸 / 字号 / 行距 / 配色变了才重排。
+  NovelPagination _resolvePaging({
+    required NovelText text,
+    required String title,
     required double width,
     required double height,
     required double fontSize,
     required double lineHeight,
+    required String? fontFamily,
+    required Color color,
+    required double titleInset,
   }) {
-    final charsPerLine = math.max(8, (width / fontSize).floor());
-    final rowHeight = fontSize * lineHeight + 12;
-    final capacity = math.max(3, (height / rowHeight).floor());
-    // 首页要放章节标题，少排三行。
-    final pages = <List<String>>[];
-    var current = <String>[];
-    var rowsLeft = math.max(2, capacity - 3);
-    for (final paragraph in paragraphs) {
-      final rows = math.max(1, (paragraph.length / charsPerLine).ceil());
-      if (current.isNotEmpty && rows > rowsLeft) {
-        pages.add(current);
-        current = <String>[];
-        rowsLeft = capacity;
-      }
-      current.add(paragraph);
-      rowsLeft -= rows;
+    final signature = [
+      text.chapterId,
+      width.toStringAsFixed(1),
+      height.toStringAsFixed(1),
+      fontSize.toStringAsFixed(2),
+      lineHeight.toStringAsFixed(2),
+      fontFamily ?? '',
+      color.toString(),
+      titleInset.toStringAsFixed(1),
+    ].join('|');
+    if (_paging != null && _pagingSignature == signature) return _paging!;
+    final old = _paging;
+    final next = NovelPagination.build(
+      paragraphs: text.paragraphs,
+      width: width,
+      height: height,
+      fontSize: fontSize,
+      lineHeight: lineHeight,
+      fontFamily: fontFamily,
+      color: color,
+      titleInset: titleInset,
+    );
+    _paging = next;
+    _pagingSignature = signature;
+    if (old != null) {
+      // 旧的 painter 可能还在这一帧被画到，延后一帧再释放，避免野指针。
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
     }
-    if (current.isNotEmpty) pages.add(current);
-    if (pages.isEmpty) pages.add(const <String>[]);
-    return pages;
+    return next;
+  }
+
+  /// 切章 / 续读后把 PageView 定位到目标页。
+  void _applyPendingPage(int pageCount) {
+    final toLast = _pendingLastPage;
+    final target = _pendingPage;
+    if (!toLast && target == null) return;
+    _pendingLastPage = false;
+    _pendingPage = null;
+    if (!toLast && target! >= pageCount) {
+      // 旧版本（滚动模式）存的是像素偏移，当成页码会一下跳到最后一页；
+      // 出现这种情况说明是升级上来的老进度，直接从第一页开始。
+      return;
+    }
+    final page = math.min(
+      math.max(toLast ? pageCount - 1 : target!, 0),
+      math.max(0, pageCount - 1),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pager.hasClients) return;
+      _pager.jumpToPage(page);
+      if (mounted) setState(() => _pageIndex = page);
+    });
   }
 
   Widget _footerButton(String label, Color textColor, VoidCallback? onTap) {

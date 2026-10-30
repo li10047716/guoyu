@@ -110,9 +110,12 @@ class NovelShelfGroup {
 }
 
 /// 翻页方式。
+///
+/// 0.7.86 起默认 [slide]（左右翻页）：手机阅读器的标准形态，也顺手解决了
+/// 老版本「整章一页竖着滚、看着像浏览器网页」的问题。
 enum NovelPageMode {
-  scroll('上下滚动'),
-  slide('左右翻页');
+  slide('左右翻页'),
+  scroll('上下滚动');
 
   const NovelPageMode(this.label);
 
@@ -120,18 +123,42 @@ enum NovelPageMode {
 }
 
 /// 正文字体。
+///
+/// 字体名得按平台给：`Songti SC` / `Kaiti SC` 是 iOS / macOS 的名字，
+/// Windows 上对应 `SimSun` / `KaiTi`，而 **Android 根本没有这几个商标字体**，
+/// 只有 `serif` / `sans-serif` 两个通用族——0.7.86 之前统一写成苹果那套，
+/// 在安卓上等于三个选项全都没生效，用户点了「楷体」看到的还是默认黑体。
 enum NovelFontFamily {
-  system('默认', null),
-  serif('宋体', 'Songti SC'),
-  kai('楷体', 'Kaiti SC'),
-  hei('黑体', 'Heiti SC');
+  system('默认'),
+  serif('宋体'),
+  kai('楷体'),
+  hei('黑体');
 
-  const NovelFontFamily(this.label, this.fontFamily);
+  const NovelFontFamily(this.label);
 
   final String label;
 
   /// 传给 TextStyle.fontFamily；null 表示跟随系统。
-  final String? fontFamily;
+  String? get fontFamily {
+    final android = defaultTargetPlatform == TargetPlatform.android;
+    final apple =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+    switch (this) {
+      case NovelFontFamily.system:
+        return null;
+      case NovelFontFamily.serif:
+        if (android) return 'serif';
+        return apple ? 'Songti SC' : 'SimSun';
+      case NovelFontFamily.kai:
+        // Android 没有楷体字族，退到衬线体——至少和默认黑体区分得开。
+        if (android) return 'serif';
+        return apple ? 'Kaiti SC' : 'KaiTi';
+      case NovelFontFamily.hei:
+        if (android) return 'sans-serif';
+        return apple ? 'Heiti SC' : 'Microsoft YaHei';
+    }
+  }
 }
 
 /// 阅读器外观设置（字号 / 行距 / 主题 / 翻页 / 字体 / 亮度 / 背景图）。
@@ -140,11 +167,14 @@ class NovelReaderSettings {
     this.fontScale = 1,
     this.lineHeight = 1.75,
     this.theme = NovelReaderTheme.night,
-    this.pageMode = NovelPageMode.scroll,
+    this.pageMode = NovelPageMode.slide,
     this.fontFamily = NovelFontFamily.system,
     this.brightness = 1,
     this.backgroundImage,
   });
+
+  /// 设置结构版本：0.7.86 重做了分页，老数据要强制升级一次翻页方式。
+  static const int layoutVersion = 2;
 
   /// 字号倍率（0.8 ~ 1.8）。
   final double fontScale;
@@ -192,10 +222,7 @@ class NovelReaderSettings {
           (item) => item.name == json['theme'],
           orElse: () => NovelReaderTheme.night,
         ),
-        pageMode: NovelPageMode.values.firstWhere(
-          (item) => item.name == json['pageMode'],
-          orElse: () => NovelPageMode.scroll,
-        ),
+        pageMode: _readPageMode(json),
         fontFamily: NovelFontFamily.values.firstWhere(
           (item) => item.name == json['fontFamily'],
           orElse: () => NovelFontFamily.system,
@@ -206,6 +233,20 @@ class NovelReaderSettings {
         ),
         backgroundImage: _readBackgroundImage(json['backgroundImage']),
       );
+
+  /// 0.7.86：分页重做后，旧设置里的「上下滚动」统一升级成「左右翻页」一次。
+  ///
+  /// 老版本默认就是滚动，用户多半没主动选过——直接改默认值他又不会重新读，
+  /// 所以这里做一次性迁移：没写过 `layoutVersion` 的数据一律按新默认走。
+  /// 之后再手动切回滚动会带上版本号，不会被反复改回去。
+  static NovelPageMode _readPageMode(Map<String, dynamic> json) {
+    final version = (json['layoutVersion'] as num?)?.toInt() ?? 0;
+    if (version < layoutVersion) return NovelPageMode.slide;
+    return NovelPageMode.values.firstWhere(
+      (item) => item.name == json['pageMode'],
+      orElse: () => NovelPageMode.slide,
+    );
+  }
 
   static String? _readBackgroundImage(Object? raw) {
     if (raw is! String) return null;
@@ -220,6 +261,7 @@ class NovelReaderSettings {
     'fontFamily': fontFamily.name,
     'brightness': brightness,
     'backgroundImage': backgroundImage,
+    'layoutVersion': layoutVersion,
   };
 }
 
