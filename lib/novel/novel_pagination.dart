@@ -2,6 +2,19 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+/// 中文字形兜底。
+///
+/// 某些 Android ROM 上 `serif` 会落到只有拉丁字符的 Droid Serif，
+/// 没有 fallback 时中文会整片变成方块——用户看到的就是「乱码」。
+const List<String> novelFontFallback = [
+  'Noto Sans CJK SC',
+  'Noto Sans SC',
+  'Source Han Sans SC',
+  'Droid Sans Fallback',
+  'Microsoft YaHei',
+  'PingFang SC',
+];
+
 /// 一页正文在整章排版结果里的窗口。
 class NovelPageSlice {
   const NovelPageSlice({required this.top, required this.height});
@@ -78,6 +91,7 @@ class NovelPagination {
           fontSize: fontSize,
           height: lineHeight,
           fontFamily: fontFamily,
+          fontFamilyFallback: novelFontFallback,
         ),
       ),
       textDirection: TextDirection.ltr,

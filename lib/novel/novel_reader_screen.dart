@@ -490,6 +490,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
                 fontWeight: FontWeight.w700,
                 height: 1.4,
                 fontFamily: fontFamily,
+                fontFamilyFallback: novelFontFallback,
               ),
             ),
             const SizedBox(height: 18),
@@ -503,6 +504,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
                     fontSize: fontSize,
                     height: _store.settings.lineHeight,
                     fontFamily: fontFamily,
+                    fontFamilyFallback: novelFontFallback,
                   ),
                 ),
               ),
@@ -629,65 +631,74 @@ class _NovelReaderScreenState extends State<NovelReaderScreen> {
               setState(() {});
             },
             itemBuilder: (context, index) {
-            if (index >= pageCount) {
-              return _chapterBridge(textColor, fontSize);
-            }
-            final slice = paging.slices[index];
-            final canvas = ClipRect(
-              child: CustomPaint(
-                painter: NovelPagePainter(
-                  painter: paging.painter,
-                  top: slice.top,
+              if (index >= pageCount) {
+                return _chapterBridge(textColor, fontSize);
+              }
+              final slice = paging.slices[index];
+              // 正文按「本页实际用到的高度」裁剪，不能用整页高度：
+              // 页尾通常会剩不到一行的空隙，按整页裁就会把下一行的上半截
+              // 漏出来，和下一页开头那行重复，看着像串行乱码。
+              final canvas = SizedBox(
+                height: slice.height,
+                child: ClipRect(
+                  child: CustomPaint(
+                    painter: NovelPagePainter(
+                      painter: paging.painter,
+                      top: slice.top,
+                    ),
+                  ),
                 ),
-                size: Size.infinite,
-              ),
-            );
-            return Padding(
-              padding: EdgeInsets.fromLTRB(sidePad, 18, sidePad, pageGap),
-              child: Stack(
-                children: [
-                  if (index == 0 && title.isNotEmpty)
-                    Positioned.fill(
+              );
+              return Padding(
+                padding: EdgeInsets.fromLTRB(sidePad, 18, sidePad, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          SizedBox(
-                            height: titleInset,
-                            child: Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: textColor,
-                                fontSize: fontSize + 3,
-                                fontWeight: FontWeight.w700,
-                                height: 1.4,
-                                fontFamily: fontFamily,
+                          if (index == 0 && title.isNotEmpty)
+                            SizedBox(
+                              height: titleInset,
+                              child: Text(
+                                title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: textColor,
+                                  fontSize: fontSize + 3,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.4,
+                                  fontFamily: fontFamily,
+                                  fontFamilyFallback: novelFontFallback,
+                                ),
                               ),
                             ),
-                          ),
-                          Expanded(child: canvas),
+                          canvas,
                         ],
                       ),
-                    )
-                  else
-                    Positioned.fill(child: canvas),
-                  if (pageCount > 1)
-                    Positioned(
-                      right: 0,
-                      bottom: -2,
-                      child: Text(
-                        '${index + 1}/$pageCount',
-                        style: TextStyle(
-                          color: textColor.withValues(alpha: .3),
-                          fontSize: 11.5,
-                        ),
-                      ),
                     ),
-                ],
-              ),
-            );
-          },
+                    // 页码单独占一条，不参与正文区高度，免得页尾只剩几像素时挤爆。
+                    SizedBox(
+                      height: pageGap,
+                      child: pageCount > 1
+                          ? Align(
+                              alignment: Alignment.centerRight,
+                              child: Text(
+                                '${index + 1}/$pageCount',
+                                style: TextStyle(
+                                  color: textColor.withValues(alpha: .3),
+                                  fontSize: 11.5,
+                                ),
+                              ),
+                            )
+                          : null,
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         );
       },
