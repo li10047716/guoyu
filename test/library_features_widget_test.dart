@@ -195,7 +195,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('select-catalog-dramas')));
+      // 0.7.74：多选下载从顶栏图标挪进「更多」菜单。
+      await tester.tap(find.byKey(const ValueKey('more-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('多选下载'));
       await tester.pump();
       await tester.tap(find.byKey(ValueKey(first.id)));
       await tester.tap(find.byKey(ValueKey(second.id)));

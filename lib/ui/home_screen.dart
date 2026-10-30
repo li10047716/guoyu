@@ -1321,9 +1321,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       NovelHomeScreen(
                         repository: widget.repository,
                         embedded: railMode && _usesTitleBar,
+                        // 0.7.74：手机端模块切换条挂在小说页头部标签行尾。
+                        headerActions: [
+                          ModuleSwitchBar.compact(
+                            current: _currentModule,
+                            onChanged: _onModuleChanged,
+                          ),
+                        ],
                       ),
                       // 7：听歌（0.7.63）。目前是筹备中的界面，入口先落地。
-                      MusicHomeScreen(embedded: railMode && _usesTitleBar),
+                      //
+                      // 只有「窗口标题栏由我们自己渲染」时才把头部也交给它
+                      // （embedded），否则页面自带 AppBar 显示模块名。
+                      MusicHomeScreen(
+                        embedded: railMode && _usesTitleBar,
+                        headerActions: [
+                          ModuleSwitchBar.compact(
+                            current: _currentModule,
+                            onChanged: _onModuleChanged,
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -1432,6 +1450,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           onPressed: _cancelSelection,
         ),
       ] else ...[
+        // 0.7.74（用户要求）：手机顶栏加「看剧 / 小说 / 听歌」紧凑切换，
+        // 取代原底端那排切换条（底栏回归单排）。桌面/电视仍用底端条，
+        // 不在此显示，免得同一屏出现两个切换入口。
+        if (!rail && !AppLayout.isTelevision(context)) ...[
+          ModuleSwitchBar.compact(
+            current: _currentModule,
+            onChanged: _onModuleChanged,
+          ),
+          const SizedBox(width: 2),
+        ],
         if (_tab == _followIndex)
           icon(
             key: const ValueKey('follow-lan-sync'),
@@ -1441,35 +1469,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         // 0.7.28（用户要求）：桌面左侧栏去掉「排序与筛选」「多选下载」，
         // 搜索与榜单改为侧栏顶部的独立条目，刷新按钮也取消（改拖拽刷新）。
-        // 手机顶栏保持原样，功能不丢。
+        // 0.7.74（用户要求）：手机顶栏的「排序 / 榜单 / 多选下载」三个图标
+        // 也撤掉（和底栏功能重叠、把顶栏挤满），功能挪进「更多」菜单。
         if (_tab == _discoverIndex && !rail) ...[
           // 0.7.35：站源入口从标题位挪到操作区，仍是胶囊外观。
           _sourceMenu(),
-          if (!_showRecommendations)
-            icon(
-              key: const ValueKey('catalog-sort'),
-              glyph: Icons.sort_rounded,
-              tooltip: '排序与筛选 · ${widget.store.catalogView.sort.label}',
-              onPressed: _chooseCatalogView,
-              active:
-                  widget.store.catalogView.sort != CatalogSort.source ||
-                  widget.store.catalogView.release.isNotEmpty,
-            ),
-          icon(
-            key: const ValueKey('open-rankings'),
-            glyph: Icons.leaderboard_outlined,
-            tooltip: '榜单',
-            onPressed: widget.store.sources.isEmpty ? null : _openRankings,
-          ),
-          if (!_showRecommendations &&
-              widget.store.canDownload &&
-              widget.repository.supportsDownloads)
-            icon(
-              key: const ValueKey('select-catalog-dramas'),
-              glyph: Icons.checklist_rounded,
-              tooltip: '多选下载',
-              onPressed: () => setState(() => _selectionMode = true),
-            ),
           icon(
             key: const ValueKey('toggle-search'),
             glyph: Icons.search_rounded,
@@ -1575,6 +1579,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _refreshCatalog();
         } else if (value == 'sources') {
           _manageSources();
+        } else if (value == 'catalog-sort') {
+          // 0.7.74：顶栏「排序与筛选」图标撤掉后的新入口。
+          _chooseCatalogView();
+        } else if (value == 'open-rankings') {
+          _openRankings();
+        } else if (value == 'select-catalog-dramas') {
+          setState(() => _selectionMode = true);
         } else if (value == 'settings') {
           Navigator.push(
             context,
@@ -1634,6 +1645,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
       },
       itemBuilder: (_) => [
+        // 0.7.74：顶栏撤掉的「排序 / 榜单 / 多选下载」挪进这里（手机端）。
+        if (!rail && _tab == _discoverIndex && !_showRecommendations)
+          const PopupMenuItem(value: 'catalog-sort', child: Text('排序与筛选')),
+        if (!rail && _tab == _discoverIndex && widget.store.sources.isNotEmpty)
+          const PopupMenuItem(value: 'open-rankings', child: Text('榜单')),
+        if (!rail &&
+            _tab == _discoverIndex &&
+            !_showRecommendations &&
+            widget.store.canDownload &&
+            widget.repository.supportsDownloads)
+          const PopupMenuItem(
+            value: 'select-catalog-dramas',
+            child: Text('多选下载'),
+          ),
         if (_tab == _discoverIndex &&
             !_showRecommendations &&
             constraints.maxWidth < 400)
@@ -1942,7 +1967,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 SizedBox(
                   width: 26,
                   child: entry.$1 == currentId
-                      ? Icon(Icons.check_rounded, size: 18, color: colors.primary)
+                      ? Icon(
+                          Icons.check_rounded,
+                          size: 18,
+                          color: colors.primary,
+                        )
                       : null,
                 ),
                 Expanded(
@@ -2893,64 +2922,65 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_selectionMode && selectionInBody) _selectionBar(safeBottom: false),
   ];
 
-  /// 页面底端：模块切换条 + （手机端）看剧自己的底部导航。
+  /// 页面底端：（桌面/电视）模块切换条 +（手机端）看剧自己的底部导航。
   ///
-  /// 0.7.63（用户要求）：底端常驻一行「看剧 / 小说 / 听歌」。三个模块是
-  /// 平级整屏界面，所以切换条**任何模式都显示**——在小说/听歌里也能直接
-  /// 切走，不必先返回。手机端的 5 格底栏只是看剧模块内部的导航，
-  /// 因此叠在切换条上面、且只在看剧模块里出现。
+  /// 0.7.63：底端常驻「看剧 / 小说 / 听歌」切换条。0.7.74（用户要求）：
+  /// 手机端底部出现「底栏 + 切换条」两排太挤——手机改成**顶栏紧凑切换**
+  /// （[_headerActions]），底栏回归单排；小说/听歌页的切换入口在它们自己
+  /// 的头部（[NovelHomeScreen.headerActions] / [MusicHomeScreen.headerActions]）。
+  /// 桌面/电视没有顶栏操作区，仍保留底端切换条。
   Widget? _bottomArea({required bool desktop, required bool television}) {
     // 批量选择时底端换成操作条，切换条暂时让位，免得误触切走。
     if (_selectionMode) {
       return desktop || television ? null : _selectionBar();
     }
-    final showTabs = !desktop && !television && !_moduleMode;
+    if (!desktop && !television) {
+      // 手机：小说/听歌模块页有自己的头部切换，底端什么都不放。
+      if (_moduleMode) return null;
+      return SafeArea(
+        top: false,
+        child: AppBottomNavigation(
+          // `AppBottomNavigation` 用的是**位置**而不是标签下标，
+          // 所以这里要按 `_bottomTabs` 做一次映射，否则加进「找剧」后
+          // 点「追剧」会跳到找剧去。
+          selectedIndex: _bottomTabs.indexOf(_tab),
+          onDestinationSelected: (position) =>
+              _changeTab(_bottomTabs[position]),
+          destinations: [
+            NavigationDestination(
+              icon: const Icon(Icons.explore_outlined),
+              selectedIcon: const Icon(Icons.explore),
+              label: '推荐',
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.search_rounded),
+              selectedIcon: const Icon(Icons.search_rounded),
+              label: '找剧',
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.bookmark_border_rounded),
+              selectedIcon: const Icon(Icons.bookmark_rounded),
+              label: '追剧',
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.history_rounded),
+              label: '最近观看',
+            ),
+            if (widget.store.canDownload)
+              NavigationDestination(
+                icon: const Icon(Icons.download_outlined),
+                selectedIcon: const Icon(Icons.download_rounded),
+                label: '下载',
+              ),
+          ],
+        ),
+      );
+    }
     return SafeArea(
       top: false,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (showTabs)
-            AppBottomNavigation(
-              // `AppBottomNavigation` 用的是**位置**而不是标签下标，
-              // 所以这里要按 `_bottomTabs` 做一次映射，否则加进「找剧」后
-              // 点「追剧」会跳到找剧去。
-              selectedIndex: _bottomTabs.indexOf(_tab),
-              onDestinationSelected: (position) =>
-                  _changeTab(_bottomTabs[position]),
-              destinations: [
-                NavigationDestination(
-                  icon: const Icon(Icons.explore_outlined),
-                  selectedIcon: const Icon(Icons.explore),
-                  label: '推荐',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.search_rounded),
-                  selectedIcon: const Icon(Icons.search_rounded),
-                  label: '找剧',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.bookmark_border_rounded),
-                  selectedIcon: const Icon(Icons.bookmark_rounded),
-                  label: '追剧',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.history_rounded),
-                  label: '最近观看',
-                ),
-                if (widget.store.canDownload)
-                  NavigationDestination(
-                    icon: const Icon(Icons.download_outlined),
-                    selectedIcon: const Icon(Icons.download_rounded),
-                    label: '下载',
-                  ),
-              ],
-            ),
-          ModuleSwitchBar(
-            current: _currentModule,
-            onChanged: _onModuleChanged,
-          ),
-        ],
+      child: ModuleSwitchBar(
+        current: _currentModule,
+        onChanged: _onModuleChanged,
       ),
     );
   }

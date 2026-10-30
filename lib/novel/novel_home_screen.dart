@@ -52,10 +52,16 @@ class NovelHomeScreen extends StatefulWidget {
     super.key,
     required this.repository,
     this.embedded = false,
+    this.headerActions = const [],
   });
 
   final AppRepository repository;
   final bool embedded;
+
+  /// 页头右侧的额外操作（0.7.74）：手机端模块切换条挪进顶栏后，
+  /// 小说页在窄屏布局里把这几个控件拼在顶部标签行尾，
+  /// 保证在小说里也能直接切去看剧 / 听歌。
+  final List<Widget> headerActions;
 
   @override
   State<NovelHomeScreen> createState() => _NovelHomeScreenState();
@@ -317,7 +323,21 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _topTabs(context),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(child: _topTabs(context)),
+                  // 0.7.74：模块切换（看剧 / 小说 / 听歌）挂在标签行尾。
+                  if (widget.headerActions.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 10),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: widget.headerActions,
+                      ),
+                    ),
+                ],
+              ),
               Expanded(child: _stage(context, wide: false)),
             ],
           );

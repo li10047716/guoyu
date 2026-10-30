@@ -11,9 +11,16 @@ import 'package:flutter/material.dart';
 /// 定好，等接入播放内核（media_kit 已经在播放器里用起来了）后，
 /// 把中间这块换成播放页 + 歌单即可，不用再动主框架。
 class MusicHomeScreen extends StatelessWidget {
-  const MusicHomeScreen({super.key, this.embedded = false});
+  const MusicHomeScreen({
+    super.key,
+    this.embedded = false,
+    this.headerActions = const [],
+  });
 
   final bool embedded;
+
+  /// AppBar 右侧的额外操作（0.7.74）：模块切换紧凑条。
+  final List<Widget> headerActions;
 
   @override
   Widget build(BuildContext context) {
@@ -23,6 +30,7 @@ class MusicHomeScreen extends StatelessWidget {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: const Text('听歌'),
+        actions: [for (final action in headerActions) action],
       ),
       body: body,
     );

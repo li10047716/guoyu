@@ -53,19 +53,22 @@ void main() {
     expect(find.byKey(const ValueKey('open-rankings')), findsOneWidget);
   });
 
-  testWidgets('手机：切换条在底栏下方，切小说后底栏收起，切回看剧恢复', (tester) async {
+  testWidgets('手机：切换条在顶栏，切小说后底栏收起，切回看剧恢复', (tester) async {
     await _pumpApp(tester, const Size(390, 844));
 
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsOneWidget);
-    expect(find.byKey(const ValueKey('module-novel')), findsOneWidget);
+    // 0.7.74（用户要求）：底部两排太挤，切换条改成紧凑版挂进顶栏，
+    // key 也换成 `-compact` 后缀。
+    expect(find.byKey(const ValueKey('module-novel-compact')), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('module-novel')));
+    await tester.tap(find.byKey(const ValueKey('module-novel-compact')));
     await tester.pumpAndSettle();
 
     expect(find.text('书架还是空的'), findsOneWidget);
-    // 看剧的 5 格底栏收起，模块切换条留下。
+    // 看剧的 5 格底栏收起；手机端小说页底端不再有切换条，
+    // 切换入口在小说页头部的标签行尾。
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsNothing);
-    expect(find.byKey(const ValueKey('module-watch')), findsOneWidget);
+    expect(find.byKey(const ValueKey('module-watch-compact')), findsOneWidget);
 
     // 0.7.65（用户要求）：模块里按系统返回键不再回看剧，等于没反应。
     await tester.binding.handlePopRoute();
@@ -73,7 +76,7 @@ void main() {
     expect(find.text('书架还是空的'), findsOneWidget);
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('module-watch')));
+    await tester.tap(find.byKey(const ValueKey('module-watch-compact')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsOneWidget);
@@ -82,13 +85,13 @@ void main() {
   testWidgets('手机：听歌是独立屏，能切回看剧', (tester) async {
     await _pumpApp(tester, const Size(390, 844));
 
-    await tester.tap(find.byKey(const ValueKey('module-music')));
+    await tester.tap(find.byKey(const ValueKey('module-music-compact')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('music-placeholder')), findsOneWidget);
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('module-watch')));
+    await tester.tap(find.byKey(const ValueKey('module-watch-compact')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('bottom-nav-0')), findsOneWidget);

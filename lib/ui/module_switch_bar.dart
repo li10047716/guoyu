@@ -28,14 +28,35 @@ class ModuleSwitchBar extends StatelessWidget {
     super.key,
     required this.current,
     required this.onChanged,
-  });
+  }) : _compact = false;
+
+  /// 顶栏用的紧凑版（0.7.74，用户要求）：手机端底栏只留一排，
+  /// 切换条挪进顶栏——选中的段显示「图标 + 文字」，未选中只留图标，
+  /// 整条宽度约 110px，和站源胶囊、搜索按钮同排不挤。
+  const ModuleSwitchBar.compact({
+    super.key,
+    required this.current,
+    required this.onChanged,
+  }) : _compact = true;
 
   final AppModule current;
   final ValueChanged<AppModule> onChanged;
 
+  /// 是否用顶栏紧凑形态（见 [ModuleSwitchBar.compact]）。
+  final bool _compact;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    if (_compact) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final module in AppModule.values)
+            _compactSegment(context, module),
+        ],
+      );
+    }
     return Padding(
       // 手机端这条下面是系统手势区，交给外层 SafeArea 统一处理，
       // 这里只留一点视觉间距。
@@ -53,11 +74,62 @@ class ModuleSwitchBar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                for (final module in AppModule.values) _segment(context, module),
+                for (final module in AppModule.values)
+                  _segment(context, module),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 紧凑段：选中的「图标+文字」实心胶囊，未选中的纯图标按钮。
+  Widget _compactSegment(BuildContext context, AppModule module) {
+    final colors = Theme.of(context).colorScheme;
+    final selected = module == current;
+    final radius = BorderRadius.circular(17);
+    final child = selected
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(module.selectedGlyph, size: 16, color: colors.onPrimary),
+                const SizedBox(width: 4),
+                Text(
+                  module.label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: colors.onPrimary,
+                  ),
+                ),
+              ],
+            ),
+          )
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Icon(module.glyph, size: 19, color: colors.onSurfaceVariant),
+          );
+    return Semantics(
+      container: true,
+      button: true,
+      selected: selected,
+      label: module.label,
+      child: Material(
+        color: selected ? colors.primary : Colors.transparent,
+        borderRadius: radius,
+        clipBehavior: Clip.antiAlias,
+        child: Tooltip(
+          message: module.label,
+          child: InkWell(
+            key: ValueKey('${module.key}-compact'),
+            borderRadius: radius,
+            onTap: selected ? null : () => onChanged(module),
+            child: SizedBox(height: 34, child: child),
+          ),
+        ),
       ),
     );
   }
