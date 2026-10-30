@@ -15,15 +15,14 @@ import 'package:duanju_app/novel/novel_detail_screen.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_store.dart';
 
-/// 小说模块内的二级分区（0.7.66）。
+/// 小说模块内的二级分区（0.7.66；0.7.81 起去掉「探索」）。
 ///
-/// 参考成熟阅读器的信息架构：书架 / 发现 / 探索 / 我的。
+/// 参考成熟阅读器的信息架构：书架 / 发现 / 我的。
 /// 之前只有「书架 / 搜书」两个 Tab，搜书是并列入口；现在搜索收进
 /// 右上角的放大镜（以及发现页的大搜索框），分区留给真正的内容聚合。
 enum _NovelSection {
   shelf('书架', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
   discover('发现', Icons.explore_outlined, Icons.explore_rounded),
-  explore('探索', Icons.grid_view_rounded, Icons.grid_view_rounded),
   mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
 
   const _NovelSection(this.label, this.glyph, this.selectedGlyph);
@@ -208,12 +207,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     setState(() => _searchOpen = false);
   }
 
-  /// 从发现/探索页点分类或热词：直接带着关键词进入搜索并出结果。
-  void _searchKeyword(String keyword) {
-    setState(() => _searchOpen = true);
-    _runSearch(keyword);
-  }
-
   Future<void> _runSearch(String keyword) async {
     final query = keyword.trim();
     if (query.isEmpty) return;
@@ -297,16 +290,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     await Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const BookSourceScreen()));
-  }
-
-  void _notYet(String label) {
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(
-        content: Text('$label：即将支持'),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
   }
 
   @override
@@ -533,17 +516,19 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
                 ),
               ),
             if (showTitle)
-              Flexible(
-                child: Text(
-                  _searchOpen ? '搜索' : _section.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: wide ? 26 : 21,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -.4,
-                    color: colors.onSurface,
-                  ),
+              // 0.7.81 修复：这里以前是 `Flexible`（默认 flex:1），会和后面的
+              // `Spacer` 平分剩余空间；标题文字用不完那份额度，空间就地丢失，
+              // 工具条永远推不到最右（所有平台都中招）。改为不参与 flex 的
+              // 普通文本——分区名只有两三个字，不存在溢出问题。
+              Text(
+                _searchOpen ? '搜索' : _section.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: wide ? 26 : 21,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -.4,
+                  color: colors.onSurface,
                 ),
               ),
             const Spacer(),
@@ -554,7 +539,8 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     );
   }
 
-  /// 右上工具区：一枚胶囊装「分组 / 视图 / 搜索」，旁边单独一枚「更多」。
+  /// 右上工具区（0.7.81，用户要求）：书架页只留「视图 / 搜索」两钮胶囊 +
+  /// 单独一枚「更多」；分组筛选收进「更多」菜单，顶部不再摆「全部▾」。
   Widget _toolbar(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final onShelf = _section == _NovelSection.shelf;
@@ -571,8 +557,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 分组筛选与视图切换只对书架有意义。
-              if (onShelf) ...[_groupMenu(context), _toolDivider(colors)],
+              // 视图切换只对书架有意义。
               if (onShelf) ...[
                 _toolIcon(
                   context,
@@ -631,74 +616,10 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     );
   }
 
-  Widget _groupMenu(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final groups = NovelStore.instance.groups;
-    return PopupMenuButton<String>(
-      key: const ValueKey('novel-shelf-group'),
-      tooltip: '筛选书架',
-      position: PopupMenuPosition.under,
-      onSelected: _onScopeSelected,
-      itemBuilder: (context) => [
-        for (final scope in const [
-          _ShelfScope.all,
-          _ShelfScope.reading,
-          _ShelfScope.unread,
-        ])
-          PopupMenuItem(
-            value: scope.name,
-            child: Text(
-              _scopeLabelOf(scope),
-              style: const TextStyle(fontSize: 13),
-            ),
-          ),
-        if (groups.isNotEmpty) ...[
-          const PopupMenuDivider(),
-          for (final group in groups)
-            PopupMenuItem(
-              value: 'group:${group.id}',
-              child: Text(group.name, style: const TextStyle(fontSize: 13)),
-            ),
-        ],
-        const PopupMenuDivider(),
-        const PopupMenuItem(
-          value: 'manage',
-          child: Row(
-            children: [
-              Icon(Icons.tune_rounded, size: 16),
-              SizedBox(width: 8),
-              Text('管理分组…', style: TextStyle(fontSize: 13)),
-            ],
-          ),
-        ),
-      ],
-      child: Padding(
-        padding: const EdgeInsets.only(left: 12, right: 8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              _scopeLabel,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(width: 2),
-            Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 16,
-              color: colors.onSurfaceVariant,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _moreMenu(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final onShelf = _section == _NovelSection.shelf;
+    final groups = NovelStore.instance.groups;
     return PopupMenuButton<String>(
       key: const ValueKey('novel-more'),
       tooltip: '更多',
@@ -718,10 +639,70 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
           case 'manage-groups':
             unawaited(_manageGroups());
           default:
-            _notYet(value);
+            _onScopeSelected(value);
         }
       },
-      itemBuilder: (context) => const [
+      itemBuilder: (context) => [
+        // 书架筛选（0.7.81 从顶部「全部▾」挪进来）：全部 / 在读 / 未开始 /
+        // 各自定义分组，当前项打勾。
+        if (onShelf) ...[
+          for (final scope in const [
+            _ShelfScope.all,
+            _ShelfScope.reading,
+            _ShelfScope.unread,
+          ])
+            PopupMenuItem(
+              value: scope.name,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 26,
+                    child: _scope == scope && _customGroupId == null
+                        ? Icon(
+                            Icons.check_rounded,
+                            size: 16,
+                            color: colors.primary,
+                          )
+                        : null,
+                  ),
+                  Text(
+                    _scopeLabelOf(scope),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          if (groups.isNotEmpty) ...[
+            for (final group in groups)
+              PopupMenuItem(
+                value: 'group:${group.id}',
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 26,
+                      child: _scope == _ShelfScope.custom &&
+                              _customGroupId == group.id
+                          ? Icon(
+                              Icons.check_rounded,
+                              size: 16,
+                              color: colors.primary,
+                            )
+                          : null,
+                    ),
+                    Expanded(
+                      child: Text(
+                        group.name,
+                        style: const TextStyle(fontSize: 13),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const PopupMenuDivider(),
+          ],
+        ],
         PopupMenuItem(
           value: 'import',
           child: Row(
@@ -775,13 +756,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     _ShelfScope.custom => '分组',
   };
 
-  String get _scopeLabel {
-    if (_scope != _ShelfScope.custom) return _scopeLabelOf(_scope);
-    for (final group in NovelStore.instance.groups) {
-      if (group.id == _customGroupId) return group.name;
-    }
-    return '全部';
-  }
 
   void _onScopeSelected(String value) {
     if (value == 'manage') {
@@ -1031,12 +1005,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
           gateway: _gateway,
           onOpenSearch: _openSearch,
           onOpenNovel: _openNovel,
-        );
-      case _NovelSection.explore:
-        return _ExplorePage(
-          keywords: _hotKeywords,
-          onKeyword: _searchKeyword,
-          onNotYet: _notYet,
         );
       case _NovelSection.mine:
         return const _MinePage();
@@ -2356,59 +2324,6 @@ class _RankRow extends StatelessWidget {
   }
 }
 
-/// 探索：热词墙 + 榜单占位。
-class _ExplorePage extends StatelessWidget {
-  const _ExplorePage({
-    required this.keywords,
-    required this.onKeyword,
-    required this.onNotYet,
-  });
-
-  final List<String> keywords;
-  final ValueChanged<String> onKeyword;
-  final ValueChanged<String> onNotYet;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
-      children: [
-        const _SectionTitle('热门关键词'),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final keyword in keywords)
-              ActionChip(
-                key: ValueKey('explore-keyword-$keyword'),
-                label: Text(keyword, style: const TextStyle(fontSize: 12.5)),
-                onPressed: () => onKeyword(keyword),
-                backgroundColor: colors.surfaceContainerHighest.withValues(
-                  alpha: .5,
-                ),
-                side: BorderSide.none,
-              ),
-          ],
-        ),
-        const _SectionTitle('书单'),
-        _PlaceholderCard(
-          icon: Icons.collections_bookmark_outlined,
-          title: '精选书单筹备中',
-          message: '后续会按分类整理一批能读的书单，点进去直接开始读。',
-        ),
-        const SizedBox(height: 16),
-        OutlinedButton.icon(
-          key: const ValueKey('explore-shuffle'),
-          onPressed: () => onNotYet('随机推荐'),
-          icon: const Icon(Icons.shuffle_rounded, size: 18),
-          label: const Text('随机推荐一本'),
-        ),
-      ],
-    );
-  }
-}
-
 /// 我的：书源信息 + 阅读偏好概览。
 class _MinePage extends StatelessWidget {
   const _MinePage();
@@ -2727,64 +2642,6 @@ class _EmptyState extends StatelessWidget {
             if (action != null) ...[const SizedBox(height: 10), action!],
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _PlaceholderCard extends StatelessWidget {
-  const _PlaceholderCard({
-    required this.icon,
-    required this.title,
-    required this.message,
-  });
-
-  final IconData icon;
-  final String title;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: .32),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: colors.outlineVariant.withValues(alpha: .6),
-          style: BorderStyle.solid,
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 20, color: colors.onSurfaceVariant),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  message,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    height: 1.5,
-                    color: colors.onSurfaceVariant.withValues(alpha: .85),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
