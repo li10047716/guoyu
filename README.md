@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.76+136** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.77+137** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,7 +14,20 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.76）
+## 二、本次更新（0.7.77）
+
+**红果源恢复完整在线播放**（此前只能浏览、不能播）。
+
+- **根因定位**：播放取流端点 `/novel/player/multi_video_model/v1/` 只要请求里
+  带 `X-Argus`/`X-Gorgon` 这一套客户端签名头，网关就稳定返回「HTTP 200 + 空体」；
+  把签名头去掉（连 `ts`、`_rticket` 都不加）反而正常返回完整 `video_model`。
+  实测签名请求 16/16 空体、裸请求 5/5 成功。
+- **修法**：取流先走「裸请求」并保留四网关轮换，全部落空后再退回带签名请求兜底。
+  目录、剧集详情、搜索链路维持原有签名方式不变（实测仍然正常）。
+- **验证结果**：取流平均约 0.5 秒返回 1080P 直链，CDN 分片请求 206 正常，
+  CENC 密钥（spade_a → 16 字节）解析正常，第 1、2、21 集均取流成功。
+
+### 0.7.76：红果源客户端指纹与设备身份对齐 guo v1.2.11
 
 **红果源客户端指纹与设备身份全面对齐 guo v1.2.11**（红果 PC 播放器）：
 
@@ -744,6 +757,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
+| 0.7.77 | 2026-10-30 | 红果源恢复完整播放：取流改「裸请求」（去掉 X-Argus/X-Gorgon 等签名头与 ts/_rticket），签名请求改为兜底；实测 0.5s 返回 1080P 直链、CDN 206 正常 |
 | 0.7.70 | 2026-10-29 | 小说：书源脚本补 jsoup（org.jsoup、元素级 result、Elements 集合）与 Java 类库子集（String/Arrays/Base64/MessageDigest/BigInteger/Cipher/GZIP…），顶层 return 兼容、选择器容错；实测全链路通过源 5 → 7 |
 | 0.7.71 | 2026-10-29 | 小说：书源请求包上限 1MB→16MB、jsLib 原生侧缓存；`String.getBytes(charset)` 按字符集编码（修 AES 块长度报错）；补 `java.net.URL`/`HttpURLConnection`、`BigInteger.modPow`、`SecureRandom.generateSeed`、`source.put`、`data:` 内联地址；**番茄小说(APP) 源全链路跑通** |
 | 0.7.72 | 2026-10-29 | 小说：搜索面板加书源选择器（内置 + 自定义源逐个勾选、选择持久化）、空结果提示「已搜 N 个源」、不可用源计数入口；一个都没勾时拦住搜索 |

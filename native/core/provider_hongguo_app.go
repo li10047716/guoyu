@@ -22,9 +22,9 @@ type hongguoAttemptsKey struct{}
 
 // errHongguoAppEmptyBody 网关「200 + 空体」。
 //
-// 0.7.39 实测：目录/详情接口偶发空体（可重试），而播放取流端点
-// （video_model / multi_video_model）对第三方客户端**稳定**返回空体，
-// 说明是端点级风控，不是网络抖动。
+// 0.7.39 观察：目录/详情接口偶发空体（可重试），播放取流端点则几乎必然空体。
+// 0.7.77 定位到真因：空体不是端点级风控，而是**请求里带了不合法签名头**时的
+// 静默拒绝——取流端点必须裸请求（见 hongguoUnsignedKey）。
 var errHongguoAppEmptyBody = errors.New("红果 App 接口未返回有效数据")
 
 const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
@@ -40,13 +40,13 @@ type hongguoCatalogCursor struct {
 }
 
 type hongguoCatalogState struct {
-	Version   int                             `json:"version"`
-	DeviceID  string                          `json:"deviceId"`
-	InstallID string                          `json:"installId"`
+	Version   int    `json:"version"`
+	DeviceID  string `json:"deviceId"`
+	InstallID string `json:"installId"`
 	// Device 是 0.7.76 起的完整设备画像（注册身份 + 请求画像）。
 	// 为 nil 时兼容 0.7.75 之前的 v1 状态：请求用镜像字段兜底。
-	Device    *hongguoDeviceProfile           `json:"device,omitempty"`
-	Feeds     map[string]hongguoCatalogCursor `json:"feeds"`
+	Device *hongguoDeviceProfile           `json:"device,omitempty"`
+	Feeds  map[string]hongguoCatalogCursor `json:"feeds"`
 }
 
 type hongguoAppClient struct {
@@ -197,6 +197,10 @@ func hongguoAppThrottle(ctx context.Context) error {
 // sinfonine 边缘池之间轮换，与 guo 的 hostPicker 行为一致）。
 type hongguoBaseKey struct{}
 
+// hongguoUnsignedKey 让调用方要求「不带签名头」地发请求。
+// 见 0.7.77：取流端点必须裸请求。
+type hongguoUnsignedKey struct{}
+
 // hongguoGatewayHosts 红果 App 网关的边缘主机池（0.7.76，取自
 // guo v1.2.11 内置的 hostPicker 列表）。
 var hongguoGatewayHosts = []string{
@@ -232,6 +236,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		cookies = profile.cookieHeader()
 		deviceID, installID = profile.DeviceID, profile.installID()
 	}
+	unsigned, _ := ctx.Value(hongguoUnsignedKey{}).(bool)
 	query := url.Values{
 		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {hongguoVersionCode}, "version_name": {hongguoVersionName},
 		"manifest_version_code": {hongguoVersionCode}, "update_version_code": {hongguoVersionCode}, "channel": {channel},
@@ -292,22 +297,32 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			return nil, err
 		}
 		request.Header.Set("User-Agent", ua)
-		if cookies != "" {
-			request.Header.Set("Cookie", cookies)
-		}
 		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
-		request.Header.Set("X-XS-From-Web", "0")
-		request.Header.Set("Sdk-Version", "2")
-		// 0.7.16：红果 App 网关现在校验完整客户端特征，缺这几项时
-		// 部分接口（尤其播放取流）会返回 HTTP 200 + 空体。
-		request.Header.Set("X-Tt-Request-Tag", "t=0;n=0")
-		request.Header.Set("Passport-Sdk-Version", "50561")
-		request.Header.Set("X-Vc-Bdturing-Sdk-Version", "3.7.2.cn")
-		request.Header.Set("X-Tt-Dt", "")
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
+		if !unsigned {
+			// 0.7.77：这些「secsdk 客户端特征」头一旦带上，网关就会要求
+			// 与之匹配的合法签名；实测不带它们的裸请求反而正常。
+			if cookies != "" {
+				request.Header.Set("Cookie", cookies)
+			}
+			request.Header.Set("X-XS-From-Web", "0")
+			request.Header.Set("Sdk-Version", "2")
+			request.Header.Set("X-Tt-Request-Tag", "t=0;n=0")
+			request.Header.Set("Passport-Sdk-Version", "50561")
+			request.Header.Set("X-Vc-Bdturing-Sdk-Version", "3.7.2.cn")
+			request.Header.Set("X-Tt-Dt", "")
+		}
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
+			if unsigned {
+				// 0.7.77：取流端点对「带签名头」的请求稳定返回 200 + 空体，
+				// 而完全不带签名头反而正常返回（实测 multi_video_model：
+				// 签名 16/16 空体、裸请求 5/5 成功）。这里只落 query，
+				// 不加 ts / _rticket，也不加签名头。
+				prepared.URL.RawQuery = query.Encode()
+				return
+			}
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()

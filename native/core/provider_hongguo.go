@@ -218,11 +218,10 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if apiErr == nil {
 		return media, nil
 	}
-	// 0.7.40：红果对第三方客户端的取流已在 App 网关（端点级风控，返回空体）
-	// 和网页（只公开约 10 秒的试看片段）两侧同时收紧，
-	// 这里把「为什么不能播」直接写进错误，避免用户反复重试。
+	// 0.7.77：App 取流已恢复（裸请求），这里的兜底只在网关整体不可达时才走到，
+	// 错误文案保留三条链路各自的原因，方便排查而不是给用户下结论。
 	return providerMedia{}, fmt.Errorf(
-		"红果暂不可播：App 取流 %v；网页取流 %v；备用线路 %v。红果已收紧第三方取流，网页站只提供约 10 秒的试看片段，完整剧集需在红果 App 内观看",
+		"红果暂不可播：App 取流 %v；网页取流 %v；备用线路 %v。可稍后重试，或换其他站源查找这部剧",
 		publicError(nativeErr), publicError(pageErr), publicError(apiErr))
 }
 

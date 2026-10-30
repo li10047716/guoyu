@@ -26,6 +26,9 @@ import (
 //
 // 0.7.76：取流是风控最重的端点（200 + 空体），除重试外在四个网关
 // 边缘主机之间轮换（对齐 guo 的 hostPicker 行为）。
+//
+// 0.7.77：空体的真因是请求里带了不合法签名头——该端点必须裸请求，
+// 详见 hongguoAppRequest 的 unsigned 分支。
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
@@ -52,35 +55,41 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		"player_so_load":          {"1"},
 		"is_android_pad_screen":   {"0"},
 	}
+	// 0.7.77：先「裸请求」（不带签名头）走四个网关；实测该端点在
+	// 带签名头时 100% 返回 200 + 空体，裸请求则稳定返回 video_model。
+	// 全部网关落空后再退回带签名请求，避免红果重新收紧时直接不可用。
 	var lastErr error
-	for _, host := range hongguoGatewayHosts {
-		if ctx.Err() != nil {
-			return providerMedia{}, ctx.Err()
-		}
-		// 每个主机最多 2 次，避免退避把总时长拖爆（4 主机 × 2 = 8 次）。
-		hostCtx := context.WithValue(ctx, hongguoAttemptsKey{}, 2)
-		hostCtx = context.WithValue(hostCtx, hongguoBaseKey{}, host)
-		result, err := downloader.hongguoAppRequest(hostCtx, http.MethodPost, "/novel/player/multi_video_model/v1/", extra, payload)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		data := nestedMap(result, "data")
-		entry := nestedMap(data, videoID)
-		model := hongguoVideoModel(entry["video_model"])
-		if len(model) == 0 {
-			if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
-				return media, nil
+	for _, unsigned := range []bool{true, false} {
+		for _, host := range hongguoGatewayHosts {
+			if ctx.Err() != nil {
+				return providerMedia{}, ctx.Err()
 			}
-			lastErr = errors.New("红果 App 未返回该集播放信息")
-			continue
-		}
-		if media, err := selectHongguoAppMedia(model); err == nil {
-			return media, nil
-		} else if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
-			return media, nil
-		} else {
-			return providerMedia{}, err
+			// 每个主机最多 2 次，避免退避把总时长拖爆（4 主机 × 2 = 8 次）。
+			hostCtx := context.WithValue(ctx, hongguoAttemptsKey{}, 2)
+			hostCtx = context.WithValue(hostCtx, hongguoBaseKey{}, host)
+			hostCtx = context.WithValue(hostCtx, hongguoUnsignedKey{}, unsigned)
+			result, err := downloader.hongguoAppRequest(hostCtx, http.MethodPost, "/novel/player/multi_video_model/v1/", extra, payload)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			data := nestedMap(result, "data")
+			entry := nestedMap(data, videoID)
+			model := hongguoVideoModel(entry["video_model"])
+			if len(model) == 0 {
+				if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
+					return media, nil
+				}
+				lastErr = errors.New("红果 App 未返回该集播放信息")
+				continue
+			}
+			if media, err := selectHongguoAppMedia(model); err == nil {
+				return media, nil
+			} else if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
+				return media, nil
+			} else {
+				return providerMedia{}, err
+			}
 		}
 	}
 	if lastErr == nil {
