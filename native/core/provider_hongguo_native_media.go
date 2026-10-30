@@ -23,13 +23,13 @@ import (
 //  2. 响应 `data[vid].video_model` 仍是 JSON 字符串，直接交给选流逻辑；
 //  3. 若只给了 `fallback_api`，则二次 GET 该地址，从
 //     `video_info.data.video_list` 取片源。
+//
+// 0.7.76：取流是风控最重的端点（200 + 空体），除重试外在四个网关
+// 边缘主机之间轮换（对齐 guo 的 hostPicker 行为）。
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
-	// 0.7.39：取流端点被网关稳定拒收（200 + 空体）时，4 次退避要白等 5 秒以上，
-	// 这里压到 2 次，让「App 失败 → 网页 → 备用接口」的降级更快。
-	ctx = context.WithValue(ctx, hongguoAttemptsKey{}, 2)
 	payload := map[string]any{
 		"biz_param": map[string]any{
 			"detail_page_version":       0,
@@ -46,32 +46,47 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	extra := url.Values{
 		"host_abi":                {"arm64-v8a"},
 		"dragon_device_type":      {"phone"},
-		"pv_player":               {"73532"},
+		"pv_player":               {"73932"},
 		"compliance_status":       {"0"},
 		"need_personal_recommend": {"1"},
 		"player_so_load":          {"1"},
 		"is_android_pad_screen":   {"0"},
 	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/multi_video_model/v1/", extra, payload)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	data := nestedMap(result, "data")
-	entry := nestedMap(data, videoID)
-	model := hongguoVideoModel(entry["video_model"])
-	if len(model) == 0 {
-		if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
-			return media, nil
+	var lastErr error
+	for _, host := range hongguoGatewayHosts {
+		if ctx.Err() != nil {
+			return providerMedia{}, ctx.Err()
 		}
-		return providerMedia{}, errors.New("红果 App 未返回该集播放信息")
+		// 每个主机最多 2 次，避免退避把总时长拖爆（4 主机 × 2 = 8 次）。
+		hostCtx := context.WithValue(ctx, hongguoAttemptsKey{}, 2)
+		hostCtx = context.WithValue(hostCtx, hongguoBaseKey{}, host)
+		result, err := downloader.hongguoAppRequest(hostCtx, http.MethodPost, "/novel/player/multi_video_model/v1/", extra, payload)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		data := nestedMap(result, "data")
+		entry := nestedMap(data, videoID)
+		model := hongguoVideoModel(entry["video_model"])
+		if len(model) == 0 {
+			if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
+				return media, nil
+			}
+			lastErr = errors.New("红果 App 未返回该集播放信息")
+			continue
+		}
+		if media, err := selectHongguoAppMedia(model); err == nil {
+			return media, nil
+		} else if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
+			return media, nil
+		} else {
+			return providerMedia{}, err
+		}
 	}
-	if media, err := selectHongguoAppMedia(model); err == nil {
-		return media, nil
-	} else if media, ok := downloader.hongguoFallbackMedia(ctx, model); ok {
-		return media, nil
-	} else {
-		return providerMedia{}, err
+	if lastErr == nil {
+		lastErr = errors.New("红果 App 未返回该集播放信息")
 	}
+	return providerMedia{}, lastErr
 }
 
 // hongguoVideoModel 把 `video_model`（可能是 JSON 字符串或对象）转成 map。

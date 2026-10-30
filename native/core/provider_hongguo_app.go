@@ -43,6 +43,9 @@ type hongguoCatalogState struct {
 	Version   int                             `json:"version"`
 	DeviceID  string                          `json:"deviceId"`
 	InstallID string                          `json:"installId"`
+	// Device 是 0.7.76 起的完整设备画像（注册身份 + 请求画像）。
+	// 为 nil 时兼容 0.7.75 之前的 v1 状态：请求用镜像字段兜底。
+	Device    *hongguoDeviceProfile           `json:"device,omitempty"`
 	Feeds     map[string]hongguoCatalogCursor `json:"feeds"`
 }
 
@@ -61,9 +64,20 @@ type hongguoAppClient struct {
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	downloader.hongguoOnce.Do(func() {
+		// 0.7.76：优先导入本机 guo（红果短剧 PC 播放器）注册好的设备身份；
+		// 没有就生成匿名合成画像（目录/详情可用，取流仍可能被风控）。
+		profile, importErr := importHongguoDeviceProfile()
+		if profile == nil {
+			profile = newHongguoDeviceProfile()
+		}
+		downloader.hongguoImported = importErr == nil
 		downloader.hongguo = &hongguoAppClient{
 			baseURL: hongguoAppBaseURL,
-			state:   hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
+			state: hongguoCatalogState{
+				Version: 2, Device: profile,
+				DeviceID: profile.DeviceID, InstallID: profile.installID(),
+				Feeds: map[string]hongguoCatalogCursor{},
+			},
 			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
@@ -85,10 +99,15 @@ func cloneHongguoCatalogState(state *hongguoCatalogState) *hongguoCatalogState {
 }
 
 func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) {
-	if state == nil || state.Version != 1 || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
+	if state == nil || (state.Version != 1 && state.Version != 2) || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
 		return
 	}
 	cloned := cloneHongguoCatalogState(state)
+	// v1 状态没有画像字段；v2 的画像要有效才采用，
+	// 否则保留 client 初始化时的（导入或合成）画像。
+	if cloned.Device != nil && !cloned.Device.valid() {
+		cloned.Device = nil
+	}
 	for name, cursor := range cloned.Feeds {
 		known := false
 		for _, genre := range hongguoAppGenres {
@@ -103,9 +122,20 @@ func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) 
 	defer client.catalogMu.Unlock()
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.state.Feeds) == 0 {
-		client.state = *cloned
+	if len(client.state.Feeds) != 0 {
+		return
 	}
+	adopted := *cloned
+	if adopted.Device == nil && client.state.Device != nil {
+		// 保留启动时导入/合成的画像（v1 磁盘状态里没有）。
+		adopted.Device = client.state.Device
+	}
+	if adopted.Device != nil {
+		// 镜像字段始终与画像保持一致，方便旧校验逻辑继续工作。
+		adopted.DeviceID = adopted.Device.DeviceID
+		adopted.InstallID = adopted.Device.installID()
+	}
+	client.state = adopted
 }
 
 func (downloader *Downloader) hongguoCatalogSnapshot() *hongguoCatalogState {
@@ -163,19 +193,62 @@ func hongguoAppThrottle(ctx context.Context) error {
 	return nil
 }
 
+// hongguoBaseKey 允许调用方按请求覆盖网关主机（取流端点在四个
+// sinfonine 边缘池之间轮换，与 guo 的 hostPicker 行为一致）。
+type hongguoBaseKey struct{}
+
+// hongguoGatewayHosts 红果 App 网关的边缘主机池（0.7.76，取自
+// guo v1.2.11 内置的 hostPicker 列表）。
+var hongguoGatewayHosts = []string{
+	"https://api5-normal-sinfonlineb.fqnovel.com",
+	"https://api5-normal-sinfonlinea.fqnovel.com",
+	"https://api5-normal-sinfonlinec.fqnovel.com",
+	"https://api3-normal-sinfonlinea.fqnovel.com",
+}
+
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
 	client.mu.Lock()
-	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
+	base := client.baseURL
+	profile := client.state.Device
+	deviceID, installID := client.state.DeviceID, client.state.InstallID
 	client.mu.Unlock()
+	// 取流等调用方可以要求跨主机轮换。
+	if override, ok := ctx.Value(hongguoBaseKey{}).(string); ok && override != "" {
+		base = override
+	}
+	if profile == nil {
+		// 兼容 v1 磁盘状态：没有画像时按镜像字段构造一份最小画像。
+		profile = hongguoProfileFromState(deviceID, installID)
+	}
+	brand, typ := "Redmi", "25053RT47C"
+	osAPI, osVer, resolution, dpi, channel := "36", "16", "1280*2772", "520", "update_64"
+	ua := hongguoAppUserAgent
+	var cookies string
+	if profile != nil {
+		brand, typ = profile.DeviceBrand, profile.DeviceType
+		osAPI, osVer, resolution, dpi, channel = profile.OSAPI, profile.OSVersion, profile.Resolution, profile.DPI, profile.Channel
+		ua = profile.UserAgent
+		cookies = profile.cookieHeader()
+		deviceID, installID = profile.DeviceID, profile.installID()
+	}
 	query := url.Values{
-		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"73532"}, "version_name": {"7.3.5.32"},
-		"manifest_version_code": {"73532"}, "update_version_code": {"73532"}, "channel": {"update_64"},
-		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
-		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
-		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
+		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {hongguoVersionCode}, "version_name": {hongguoVersionName},
+		"manifest_version_code": {hongguoVersionCode}, "update_version_code": {hongguoVersionCode}, "channel": {channel},
+		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {typ},
+		"device_brand": {brand}, "language": {"zh"}, "os_api": {osAPI}, "os_version": {osVer},
+		"resolution": {resolution}, "dpi": {dpi}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
 		// 0.7.16：网关签名校验会看设备画像字段，缺这两个时接口仍返回空体。
 		"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"},
+	}
+	if profile != nil {
+		// 0.7.76：设备一致性字段（guo 的请求里带），缺了也会被画像校验盯上。
+		if profile.CDID != "" {
+			query.Set("cdid", profile.CDID)
+		}
+		if profile.OpenUDID != "" {
+			query.Set("openudid", profile.OpenUDID)
+		}
 	}
 	for key, values := range extra {
 		query[key] = append([]string(nil), values...)
@@ -218,7 +291,10 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if err != nil {
 			return nil, err
 		}
-		request.Header.Set("User-Agent", hongguoAppUserAgent)
+		request.Header.Set("User-Agent", ua)
+		if cookies != "" {
+			request.Header.Set("Cookie", cookies)
+		}
 		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
@@ -273,7 +349,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 		if code != "" && code != "0" {
-			return nil, fmt.Errorf("红果 App 接口暂不可用（%s）", truncate(code, 20))
+			return nil, fmt.Errorf("红果 App 接口暂不可用（%s %s）", truncate(code, 20), truncate(firstNonEmpty(mapString(result, "message", "msg", "data"), ""), 60))
 		}
 		return result, nil
 	}

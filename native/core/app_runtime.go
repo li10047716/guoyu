@@ -42,8 +42,9 @@ type Downloader struct {
 	providerHosts map[string]string
 	limiter       *requestLimiter
 	proxyRouter   *proxyRouter
-	hongguoOnce   sync.Once
-	hongguo       *hongguoAppClient
+	hongguoOnce     sync.Once
+	hongguo         *hongguoAppClient
+	hongguoImported bool
 	diagnostics   *diagnosticLog
 	apiMu         sync.Mutex
 	apiBase       string
