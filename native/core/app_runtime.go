@@ -21,9 +21,7 @@ type Config struct {
 	Retries         int
 	InsecureTLS     bool
 	HongguoURL      string
-	SoraniURL       string
 	HanxiaoquanURL  string
-	LibvioURL       string
 	NetflixgcURL    string
 	Token           string
 	AESKeyHex       string
@@ -35,25 +33,20 @@ type Config struct {
 }
 
 type Downloader struct {
-	rankings      rankingCache
-	cfg           Config
-	client        *http.Client
-	providerMu    sync.Mutex
-	providerHosts map[string]string
-	limiter       *requestLimiter
-	proxyRouter   *proxyRouter
+	rankings        rankingCache
+	cfg             Config
+	client          *http.Client
+	providerMu      sync.Mutex
+	providerHosts   map[string]string
+	limiter         *requestLimiter
+	proxyRouter     *proxyRouter
 	hongguoOnce     sync.Once
 	hongguo         *hongguoAppClient
 	hongguoImported bool
-	diagnostics   *diagnosticLog
-	apiMu         sync.Mutex
-	apiBase       string
-	apiFailures   map[string]time.Time
-
-	// LIBVIO 的人机校验凭证（__cdn_verified），同一下载器内共享。
-	libvioMu      sync.Mutex
-	libvioCookie  string
-	libvioExpires time.Time
+	diagnostics     *diagnosticLog
+	apiMu           sync.Mutex
+	apiBase         string
+	apiFailures     map[string]time.Time
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 1, PageSize: 30, Retries: 2} }
@@ -597,30 +590,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		}
 		return result, nil
 	}
-	if query != "" && source == sourceSorani {
-		items, more, err := d.fetchSoraniCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
 	if query != "" && source == sourceHanxiaoquan {
 		items, more, err := d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && source == sourceLibvio {
-		items, more, err := d.fetchLibvioCatalogPage(ctx, page, "", query)
 		if err != nil {
 			return result, err
 		}
@@ -692,12 +663,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
 			result.HasMore = page < totalPages
 		}
-	case sourceSorani:
-		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
 	case sourceHanxiaoquan:
 		items, result.HasMore, err = d.fetchHanxiaoquanCatalogPage(ctx, page, category, "")
-	case sourceLibvio:
-		items, result.HasMore, err = d.fetchLibvioCatalogPage(ctx, page, category, "")
 	case sourceNetflixgc:
 		items, result.HasMore, err = d.fetchNetflixgcCatalogPage(ctx, page, category, "")
 	}
@@ -732,12 +699,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	var chapters []Chapter
 	var err error
 	switch source {
-	case sourceSorani:
-		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
 	case sourceHanxiaoquan:
 		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
-	case sourceLibvio:
-		raw, chapters, err = engine.downloader.fetchLibvioDetail(ctx, sourceID)
 	case sourceNetflixgc:
 		raw, chapters, err = engine.downloader.fetchNetflixgcDetail(ctx, sourceID)
 	default:

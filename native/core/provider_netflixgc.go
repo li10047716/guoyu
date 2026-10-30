@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -44,7 +43,12 @@ const (
 	netflixgcMaxPages    = 10000
 	netflixgcMaxQuery    = 64
 	// 列表接口每页条数由我们自己决定；搜索页是站点固定 10 条，改不了。
-	netflixgcPageSize       = 40
+	netflixgcPageSize = 40
+	// 「全部」走单请求（type=0），首屏只要一屏的量，剩下的靠下滑翻页取。
+	// 0.7.78：原来是并行拉五个分类各 40 条合并，一次吐 200 条、首屏要 3 秒，
+	// 而且同一部片会跨分类重复；改成单请求后实测 1.2–1.6 秒返回
+	// （请求 30 条，站点按自己的节奏回 40 条）。
+	netflixgcFeedPageSize   = 30
 	netflixgcSearchPageSize = 10
 	netflixgcMaxLineNumber  = 100
 	// 播放页解析失败时最多再换几条线路，避免一次播放把 7 条线全打一遍。
@@ -390,54 +394,33 @@ func (d *Downloader) fetchNetflixgcCatalogPage(ctx context.Context, page int, ca
 	if category != "" {
 		return d.fetchNetflixgcCategoryPage(ctx, page, category)
 	}
-	// 「全部」= 并行合并五档内容分类。
-	type outcome struct {
-		items []Drama
-		more  bool
-		err   error
+	return d.fetchNetflixgcAllPage(ctx, page)
+}
+
+// fetchNetflixgcAllPage 取「全部」列表。
+//
+// 站点接口的 `type=0` 就是全部内容（实测 total 9.4 万，比五个可见分类之和还多，
+// 含未归类的条目），而且按时间倒序、原生支持 page/limit。所以这里只发一次请求，
+// 不再并行拉五个分类再合并——那样一页 200 条、首屏 3 秒，还会重复。
+func (d *Downloader) fetchNetflixgcAllPage(ctx context.Context, page int) ([]Drama, bool, error) {
+	base := d.providerBaseURL(sourceNetflixgc)
+	form := url.Values{}
+	form.Set("type", "0")
+	form.Set("page", strconv.Itoa(page))
+	form.Set("limit", strconv.Itoa(netflixgcFeedPageSize))
+	form.Set("mid", "1")
+	form.Set("level", "0")
+	form.Set("by", "time")
+	referer := base + "/vodshow/1-----------.html"
+	body, err := d.netflixgcPost(ctx, base+"/index.php/ds_api/vod", referer, form)
+	if err != nil {
+		return nil, false, err
 	}
-	results := make([]outcome, len(netflixgcCategories))
-	slots := make(chan struct{}, 3)
-	var group sync.WaitGroup
-	for index, entry := range netflixgcCategories {
-		group.Add(1)
-		go func(index int, entry nativeCategory) {
-			defer group.Done()
-			select {
-			case slots <- struct{}{}:
-				defer func() { <-slots }()
-			case <-ctx.Done():
-				results[index].err = ctx.Err()
-				return
-			}
-			results[index].items, results[index].more, results[index].err =
-				d.fetchNetflixgcCategoryPage(ctx, page, entry.ID)
-		}(index, entry)
+	items, pageCount, err := parseNetflixgcList(body, "")
+	if err != nil {
+		return nil, false, err
 	}
-	group.Wait()
-	var items []Drama
-	var failures []error
-	more := false
-	// 同一部片可能同时挂在多个分类下，合并时按剧集 ID 去重。
-	seen := map[string]bool{}
-	for _, entry := range results {
-		for _, item := range entry.items {
-			if item.ID != "" && seen[item.ID] {
-				continue
-			}
-			seen[item.ID] = true
-			items = append(items, item)
-		}
-		more = more || entry.more
-		if entry.err != nil {
-			failures = append(failures, entry.err)
-		}
-	}
-	if len(items) == 0 {
-		if err := errors.Join(failures...); err != nil {
-			return nil, false, err
-		}
-	}
+	more := len(items) >= netflixgcFeedPageSize && (pageCount == 0 || page < pageCount)
 	return items, more, nil
 }
 

@@ -85,14 +85,14 @@ void main() {
       expect(find.byTooltip('更新当前站源'), findsOneWidget);
 
       if (allSourcesEnabled) {
-        await source('青空次元');
+        await source('韩小圈');
         expect(find.byTooltip('VIP：隐藏'), findsOneWidget);
         expect(find.text('会员合成剧'), findsNothing);
-        await capture('interface-sorani-vip');
+        await capture('interface-hanxiaoquan-vip');
         await source('红果');
         expect(find.text('红果'), findsWidgets);
       } else {
-        expect(find.text('青空次元'), findsNothing);
+        expect(find.text('韩小圈'), findsNothing);
         expect(find.text('红果'), findsOneWidget);
       }
       await store.setThemeMode('dark');

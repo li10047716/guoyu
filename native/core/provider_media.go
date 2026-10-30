@@ -26,12 +26,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 	switch source {
 	case sourceHongguo:
 		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
-	case sourceSorani:
-		configured, fallback = d.cfg.SoraniURL, soraniBaseURL
 	case sourceHanxiaoquan:
 		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanBaseURL
-	case sourceLibvio:
-		configured, fallback = d.cfg.LibvioURL, libvioBaseURL
 	case sourceNetflixgc:
 		configured, fallback = d.cfg.NetflixgcURL, netflixgcBaseURL
 	default:
@@ -49,12 +45,8 @@ func providerSourceForURL(raw string) string {
 	switch {
 	case host == "hongguoduanju.com" || host == "www.hongguoduanju.com":
 		return sourceHongguo
-	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc":
-		return sourceSorani
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
 		return sourceHanxiaoquan
-	case host == "libvio.to" || host == "www.libvio.to" || host == "libvio.me" || host == "www.libvio.me":
-		return sourceLibvio
 	case host == "netflixgc.com" || host == "www.netflixgc.com" || host == "netflixgc.net" ||
 		host == "www.netflixgc.net" || host == "netflixgc.org" || host == "www.netflixgc.org":
 		return sourceNetflixgc
@@ -69,14 +61,8 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == "" {
 		chapter.Source = sourceFromDramaID(task.DramaID)
 	}
-	if chapter.Source == sourceSorani {
-		return d.resolveSoraniMedia(ctx, task)
-	}
 	if chapter.Source == sourceHanxiaoquan {
 		return d.resolveHanxiaoquanMedia(ctx, task)
-	}
-	if chapter.Source == sourceLibvio {
-		return d.resolveLibvioMedia(ctx, task)
 	}
 	if chapter.Source == sourceNetflixgc {
 		return d.resolveNetflixgcMedia(ctx, task)

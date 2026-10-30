@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -330,7 +331,7 @@ func TestNetflixgcRejectInvalidChapter(t *testing.T) {
 		name string
 		task Task
 	}{
-		{"来源不符", Task{DramaID: "libvio:80230", Chapter: Chapter{
+		{"来源不符", Task{DramaID: "hanxiaoquan:80230", Chapter: Chapter{
 			ID: "netflixgc:80230:1-1", Source: sourceNetflixgc, VideoURL: netflixgcChapterPfx + "80230-1-1-1"}}},
 		{"剧集不符", Task{DramaID: "netflixgc:80230", Chapter: Chapter{
 			ID: "netflixgc:99999:1-1", Source: sourceNetflixgc, VideoURL: netflixgcChapterPfx + "99999-1-1-1"}}},
@@ -348,11 +349,11 @@ func TestNetflixgcRejectInvalidChapter(t *testing.T) {
 	}
 }
 
-// 「全部」= 五档分类并行合并，每档都要真的去拉一次。
-func TestNetflixgcCatalogMergesAllCategories(t *testing.T) {
+// 「全部」= 单请求 type=0（全站时间线），不再并行合并五个分类。
+func TestNetflixgcCatalogAllSingleRequest(t *testing.T) {
 	anime := readNetflixgcFixture(t, "list_anime.json")
-	movie := readNetflixgcFixture(t, "list_movie.json")
-	var seenTypes []string
+	var types []string
+	var limits []string
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
 		if !strings.HasSuffix(request.URL.Path, "/index.php/ds_api/vod") {
 			return sourceFixtureResponse(request, http.StatusNotFound, ""), nil
@@ -364,33 +365,26 @@ func TestNetflixgcCatalogMergesAllCategories(t *testing.T) {
 		if err := request.ParseForm(); err != nil {
 			return sourceFixtureResponse(request, http.StatusBadRequest, ""), nil
 		}
-		kind := request.PostForm.Get("type")
-		seenTypes = append(seenTypes, kind)
-		if kind == "1" {
-			return sourceFixtureResponse(request, http.StatusOK, movie), nil
-		}
+		types = append(types, request.PostForm.Get("type"))
+		limits = append(limits, request.PostForm.Get("limit"))
 		return sourceFixtureResponse(request, http.StatusOK, anime), nil
 	})
 	downloader := sourceFixtureDownloader(t, transport)
 	items, more, err := downloader.fetchNetflixgcCatalogPage(context.Background(), 1, "", "")
 	if err != nil {
-		t.Fatalf("合并目录失败：%v", err)
+		t.Fatalf("全部目录失败：%v", err)
 	}
-	if len(seenTypes) != len(netflixgcCategories) {
-		t.Fatalf("期望请求 %d 个分类，实际 %d：%v", len(netflixgcCategories), len(seenTypes), seenTypes)
+	if len(types) != 1 || types[0] != "0" {
+		t.Fatalf("应该只发一次 type=0 请求，实际 %v", types)
+	}
+	if len(limits) != 1 || limits[0] != strconv.Itoa(netflixgcFeedPageSize) {
+		t.Fatalf("limit 应该是 %d，实际 %v", netflixgcFeedPageSize, limits)
 	}
 	if !more {
 		t.Fatal("应该还有下一页")
 	}
 	if len(items) == 0 {
-		t.Fatal("合并结果为空")
-	}
-	sources := map[string]bool{}
-	for _, item := range items {
-		if item.ID == "" || sources[item.ID] {
-			t.Fatalf("合并结果里有重复或空 ID：%+v", item)
-		}
-		sources[item.ID] = true
+		t.Fatal("全部目录结果为空")
 	}
 }
 

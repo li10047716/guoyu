@@ -33,12 +33,8 @@ func validNativeCategory(source, category string) bool {
 				return true
 			}
 		}
-	case sourceSorani:
-		return validSoraniID(category)
 	case sourceHanxiaoquan:
 		return validHanxiaoquanCategory(category)
-	case sourceLibvio:
-		return validLibvioCategory(category)
 	case sourceNetflixgc:
 		return validNetflixgcCategory(category)
 	}
@@ -64,21 +60,9 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	d := engine.downloader
 	var err error
 	switch source {
-	case sourceSorani:
-		var categories []nativeCategory
-		categories, err = d.fetchSoraniCategories(ctx)
-		if err == nil {
-			all = append(all, categories...)
-		}
 	case sourceHanxiaoquan:
 		var categories []nativeCategory
 		categories, err = d.fetchHanxiaoquanCategories(ctx)
-		if err == nil {
-			all = append(all, categories...)
-		}
-	case sourceLibvio:
-		var categories []nativeCategory
-		categories, err = d.fetchLibvioCategories(ctx)
 		if err == nil {
 			all = append(all, categories...)
 		}

@@ -20,7 +20,7 @@ void main() {
   testWidgets(
     'edition branding and restored source match the compiled catalog',
     (tester) async {
-      SharedPreferences.setMockInitialValues({'source': 'sorani'});
+      SharedPreferences.setMockInitialValues({'source': 'hanxiaoquan'});
       final store = LocalStore(await SharedPreferences.getInstance());
       final repository = FixtureRepository();
       await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
@@ -34,7 +34,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(appName, '果屿');
       expect(appSlug, allSourcesEnabled ? 'guoyu' : 'guoyu-hongguo');
-      expect(repository.requests, [allSourcesEnabled ? 'sorani' : 'hongguo']);
+      expect(repository.requests, [allSourcesEnabled ? 'hanxiaoquan' : 'hongguo']);
       expect(store.sources.length, allSourcesEnabled ? 3 : 1);
       for (final source in SourceSite.knownValues.skip(1)) {
         expect(
@@ -42,7 +42,7 @@ void main() {
           allSourcesEnabled ? findsOneWidget : findsNothing,
         );
       }
-      expect(store.preferences.getString('source'), 'sorani');
+      expect(store.preferences.getString('source'), 'hanxiaoquan');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       store.dispose();
@@ -63,7 +63,7 @@ void main() {
           ).toJson(),
       ];
       SharedPreferences.setMockInitialValues({
-        'source': 'sorani',
+        'source': 'hanxiaoquan',
         'favorites': jsonEncode([red.toJson(), other.toJson()]),
         'history': jsonEncode(history),
       });
@@ -82,7 +82,7 @@ void main() {
       // 0.7.48：本地数据已迁到 localSnapshot.v1 快照里，旧的独立键不会再更新，
       // 因此恢复结果要按内存状态断言：已移除站源的记录被丢弃，而「当前版本
       // 未启用」的站源记录仍然保留在存储里，只在视图上被过滤掉。
-      expect(store.preferences.getString('source'), 'sorani');
+      expect(store.preferences.getString('source'), 'hanxiaoquan');
       expect(
         store.favorites.map((drama) => drama.id).toList(),
         allSourcesEnabled ? [other.id] : <String>[],
@@ -107,21 +107,21 @@ void main() {
           const LocalProfile(
             id: 'viewer',
             name: '已有用户',
-            sources: ['sorani'],
+            sources: ['hanxiaoquan'],
             download: false,
           ).toJson(),
         ]),
         'activeProfile': 'viewer',
-        'profile.viewer.source': 'sorani',
+        'profile.viewer.source': 'hanxiaoquan',
       });
       final store = LocalStore(await SharedPreferences.getInstance());
       expect(store.profile.id, 'viewer');
       expect(store.profile.admin, isFalse);
-      expect(store.profile.sources, ['sorani']);
+      expect(store.profile.sources, ['hanxiaoquan']);
       expect(store.canDownload, isFalse);
-      expect(store.source, allSourcesEnabled ? 'sorani' : '');
+      expect(store.source, allSourcesEnabled ? 'hanxiaoquan' : '');
       expect(store.allowsSource('hongguo'), isFalse);
-      expect(store.allowsSource('sorani'), allSourcesEnabled);
+      expect(store.allowsSource('hanxiaoquan'), allSourcesEnabled);
       store.dispose();
     },
   );

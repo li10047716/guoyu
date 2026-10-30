@@ -8,27 +8,20 @@ class SourceSite {
   final String name;
   final String description;
   bool get onlineSearch =>
-      id == 'hongguo' ||
-      id == 'sorani' ||
-      id == 'hanxiaoquan' ||
-      id == 'libvio' ||
-      id == 'netflixgc';
+      id == 'hongguo' || id == 'hanxiaoquan' || id == 'netflixgc';
   bool get pagedSearch =>
-      id == 'sorani' ||
-      id == 'hanxiaoquan' ||
-      id == 'libvio' ||
-      id == 'netflixgc';
+      id == 'hanxiaoquan' || id == 'netflixgc';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => id;
   String get groupName => name;
   String get entryName => name;
 
   static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
+  // 0.7.78：青空次元（播放改成必须登录、带图形验证码）与 LIBVIO（电影类
+  // 大量只有网盘资源）已整站下线；它们的本地记录会按「已移除站源」清理。
   static const knownValues = [
     hongguo,
-    SourceSite('sorani', '青空次元', '1080P 番剧 · 国漫 · 剧场版'),
     SourceSite('hanxiaoquan', '韩小圈', '韩剧 · 韩国电影 · 综艺 · 动漫'),
-    SourceSite('libvio', 'LIBVIO', '电影 · 剧集 · 番剧'),
     SourceSite('netflixgc', '奈飞工厂', '电影 · 连续剧 · 漫剧 · 综艺 · 纪录片'),
   ];
   static const values = allSourcesEnabled ? knownValues : [hongguo];

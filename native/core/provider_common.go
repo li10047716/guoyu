@@ -16,10 +16,11 @@ import (
 )
 
 const (
+	// 0.7.78：青空次元（sorani）与 LIBVIO 已从应用中移除——前者播放改成必须
+	// 登录（带图形验证码），后者电影类大量只有网盘资源，保留只会让用户点进
+	// 去发现放不了，所以整站下线。
 	sourceHongguo     = "hongguo"
-	sourceSorani      = "sorani"
 	sourceHanxiaoquan = "hanxiaoquan"
-	sourceLibvio      = "libvio"
 	sourceNetflixgc   = "netflixgc"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
@@ -51,7 +52,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isSupportedProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHongguo, sourceSorani, sourceHanxiaoquan, sourceLibvio, sourceNetflixgc:
+	case sourceHongguo, sourceHanxiaoquan, sourceNetflixgc:
 		return true
 	default:
 		return false
@@ -62,12 +63,8 @@ func canonicalProviderSource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "hongguo", "hongguoduanju.com":
 		return sourceHongguo
-	case "sorani", "sorani.net", "www.sorani.net", "api.sorani.cc":
-		return sourceSorani
 	case "hanxiaoquan", "jennyhow", "jennyhow.com", "www.jennyhow.com":
 		return sourceHanxiaoquan
-	case "libvio", "libvio.to", "www.libvio.to", "libvio.me", "www.libvio.me":
-		return sourceLibvio
 	case "netflixgc", "netflixgc.com", "www.netflixgc.com", "netflixgc.net", "www.netflixgc.net",
 		"netflixgc.org", "www.netflixgc.org":
 		return sourceNetflixgc

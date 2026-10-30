@@ -12,20 +12,31 @@ import (
 )
 
 func TestNativeBuildAuthorization(t *testing.T) {
-	for _, source := range []string{sourceHongguo, sourceSorani, sourceHanxiaoquan, "unknown"} {
-		allowed := source == sourceHongguo || buildAllSources == "true" && source != "unknown"
+	cases := []struct {
+		source  string
+		allowed bool
+	}{
+		{sourceHongguo, true},
+		{sourceHanxiaoquan, buildAllSources == "true"},
+		{sourceNetflixgc, buildAllSources == "true"},
+		// 0.7.78 起青空次元与 LIBVIO 已从站源清单移除，任何构建都不再放行。
+		{"sorani", false},
+		{"libvio", false},
+		{"unknown", false},
+	}
+	for _, testCase := range cases {
 		for _, action := range []string{"catalog", "cached", "sourceStatus", "sourceJob", "cancelSourceJob", "detail", "cover", "resolve", "enqueueDownloads", "localPlayback"} {
-			input := nativeInput{Action: action, Source: source, Drama: nativeDrama{ID: source + ":123", Source: source}}
+			input := nativeInput{Action: action, Source: testCase.source, Drama: nativeDrama{ID: testCase.source + ":123", Source: testCase.source}}
 			err := nativeAuthorizeInput(input)
-			if (err == nil) != allowed {
-				t.Fatalf("%s %s: allowed=%v, error=%v", action, source, allowed, err)
+			if (err == nil) != testCase.allowed {
+				t.Fatalf("%s %s: allowed=%v, error=%v", action, testCase.source, testCase.allowed, err)
 			}
 		}
 	}
 	for _, input := range []nativeInput{
-		{Action: "resolve", Drama: nativeDrama{ID: "sorani:123", Source: sourceHongguo}},
-		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{Source: sourceSorani}},
-		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{ID: "sorani:123:1"}},
+		{Action: "resolve", Drama: nativeDrama{ID: "hanxiaoquan:123", Source: sourceHongguo}},
+		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{Source: sourceNetflixgc}},
+		{Action: "resolve", Drama: nativeDrama{ID: "hongguo:123", Source: sourceHongguo}, Chapter: Chapter{ID: "netflixgc:123:1"}},
 	} {
 		if !errors.Is(nativeAuthorizeInput(input), errNativeBuildSource) {
 			t.Fatal("mismatched source passed native authorization")
@@ -33,7 +44,7 @@ func TestNativeBuildAuthorization(t *testing.T) {
 	}
 	manager := downloadTestManager(t)
 	input := downloadTestInput(1)
-	input.Entries[0].Chapter.Source = sourceSorani
+	input.Entries[0].Chapter.Source = sourceNetflixgc
 	if _, err := manager.enqueue(input); !errors.Is(err, errNativeBuildSource) {
 		t.Fatalf("mismatched download source accepted: %v", err)
 	}
@@ -41,10 +52,10 @@ func TestNativeBuildAuthorization(t *testing.T) {
 
 func TestNativeBuildPreservesEditionRecordsAndDropsRemovedSources(t *testing.T) {
 	manager := downloadTestManager(t)
-	// 三条记录：当前版本可用（红果）、已知但本版本未启用（青空次元）、
+	// 三条记录：当前版本可用（红果）、已知但本版本未启用（韩小圈）、
 	// 站源已从应用中移除（huangdou）。
 	records := []*nativeDownloadRecord{}
-	for index, source := range []string{sourceHongguo, sourceSorani, "huangdou"} {
+	for index, source := range []string{sourceHongguo, sourceHanxiaoquan, "huangdou"} {
 		drama := nativeDrama{ID: source + ":123", Source: source, Title: "合成下载"}
 		record := &nativeDownloadRecord{nativeDownloadJob: nativeDownloadJob{
 			ID: nativeDownloadID(drama.ID, 1), Drama: drama, Index: 1,
