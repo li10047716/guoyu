@@ -246,9 +246,9 @@ jobs:
             apk_note="Android（未配置发布签名，当前为 debug 签名，仅供测试，不能覆盖正式版安装）："
           fi
           {
-            printf '%s\n\n' "版本 ${version}。两个版本功能相同，区别只在站源范围，按需选择："
-            printf '%s\n' "- 红果鉴 hongguojian：仅红果站源"
-            printf '%s\n' "- 真果鉴 zhenguojian：全部站源"
+            printf '%s\n\n' "版本 ${version}。两个包功能相同，区别只在站源范围，按需选择："
+            printf '%s\n' "- guoyu-hongguo：仅红果站源（体积更小）"
+            printf '%s\n' "- guoyu：全部站源（推荐）"
             printf '\n%s\n' "$apk_note"
             printf '%s\n' "- *-arm64-v8a.apk：绝大多数手机选这个"
             printf '%s\n' "- *-armeabi-v7a.apk：较老的 32 位手机"
@@ -256,8 +256,6 @@ jobs:
             printf '\n%s\n' "iOS（未签名，需自行签名后才能安装）："
             printf '%s\n' "- *-ios-unsigned.ipa：未签名 IPA，用 AltStore / Sideloadly / TrollStore 等工具自签后安装"
             printf '%s\n' "- *-ios-unsigned-app.zip：未签名 Runner.app 压缩包，供自行签名 / 打包使用"
-            printf '\n%s\n' "Windows（解压后运行 hongguojian.exe 或 zhenguojian.exe）："
-            printf '%s\n' "- *-windows-x64.zip：Windows 10/11 x64 完整包；构建机没有音频和图形设备，播放自检未通过，未做设备验收"
             printf '\n%s\n' "校验：SHA256SUMS.txt"
             if printf '%s\n' "${{ vars.ANDROID_CERT_SHA256 }}" | grep -q .; then
               printf '%s\n' "签名证书 SHA-256：${{ vars.ANDROID_CERT_SHA256 }}"
@@ -267,7 +265,7 @@ jobs:
           } > notes.md
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" release/* --clobber
-            gh release edit "$tag" --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
+            gh release edit "$tag" --title "果屿 ${version}" --notes-file notes.md
             # 清理上一次构建留下、本轮已不再产出的附件，避免下载到过期文件。
             for name in $(gh release view "$tag" --json assets --jq '.assets[].name'); do
               if [ ! -e "release/$name" ]; then
@@ -275,5 +273,5 @@ jobs:
               fi
             done
           else
-            gh release create "$tag" release/* --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
+            gh release create "$tag" release/* --title "果屿 ${version}" --notes-file notes.md
           fi
