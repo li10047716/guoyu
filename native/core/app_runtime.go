@@ -477,46 +477,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "release":
 		engine.nativeReleasePlayback(input.Session)
 		return true, nil
-	// 0.7.61：小说阅读（内置书源，纯 HTML 解析）。
-	case "novelSearch":
-		items, err := engine.downloader.novelSearch(ctx, input.Query)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"items": items, "source": NovelSourceBiquge365}, nil
-	case "novelDetail":
-		book, err := engine.downloader.novelDetail(ctx, input.NovelID)
-		if err != nil {
-			return nil, err
-		}
-		return book, nil
-	case "novelChapters":
-		items, err := engine.downloader.novelChapters(ctx, input.NovelID)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"items": items}, nil
-	case "novelContent":
-		text, err := engine.downloader.novelContent(ctx, input.NovelID, input.ChapterID)
-		if err != nil {
-			return nil, err
-		}
-		return text, nil
-	// 0.7.67：书城分类与收藏排行。
-	case "novelCategories":
-		return map[string]any{"items": novelCategories()}, nil
-	case "novelCategoryBooks":
-		result, err := engine.downloader.novelCategoryBooks(ctx, input.CategoryID, input.Page)
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
-	case "novelRanking":
-		items, err := engine.downloader.novelRanking(ctx, input.CategoryID)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"items": items}, nil
+	// 0.7.85：内置笔趣阁书源已整体移除（搜索 / 详情 / 目录 / 正文 / 书城分类
+	// 与收藏排行的 action 一并删掉），小说数据只走自定义书源与本地导入。
 	// 0.7.67：本地书籍。
 	case "novelImportLocal":
 		book, err := engine.downloader.importLocalNovel(ctx, input.LibraryDir, input.FilePath)

@@ -18,17 +18,21 @@ class NovelDetailScreen extends StatefulWidget {
     super.key,
     required this.novel,
     required this.repository,
+    this.gateway,
   });
 
   final Novel novel;
   final AppRepository repository;
+
+  /// 测试注入用；生产环境留空，自己建一个。
+  final NovelGateway? gateway;
 
   @override
   State<NovelDetailScreen> createState() => _NovelDetailScreenState();
 }
 
 class _NovelDetailScreenState extends State<NovelDetailScreen> {
-  late final NovelGateway _gateway = NovelGateway(widget.repository);
+  late final NovelGateway _gateway = widget.gateway ?? NovelGateway();
 
   NovelBook? _book;
   String? _error;
@@ -187,6 +191,7 @@ class _NovelDetailScreenState extends State<NovelDetailScreen> {
           repository: widget.repository,
           initialIndex: target,
           initialOffset: resume ? progress.offset : 0,
+          gateway: _gateway,
         ),
       ),
     );

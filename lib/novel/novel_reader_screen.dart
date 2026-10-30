@@ -31,6 +31,7 @@ class NovelReaderScreen extends StatefulWidget {
     required this.repository,
     this.initialIndex = 0,
     this.initialOffset = 0,
+    this.gateway,
   });
 
   final Novel novel;
@@ -39,12 +40,15 @@ class NovelReaderScreen extends StatefulWidget {
   final int initialIndex;
   final double initialOffset;
 
+  /// 测试注入用；生产环境留空，自己建一个。
+  final NovelGateway? gateway;
+
   @override
   State<NovelReaderScreen> createState() => _NovelReaderScreenState();
 }
 
 class _NovelReaderScreenState extends State<NovelReaderScreen> {
-  late final NovelGateway _gateway = NovelGateway(widget.repository);
+  late final NovelGateway _gateway = widget.gateway ?? NovelGateway();
   final _scroll = ScrollController();
   final _pager = PageController();
   late final List<NovelChapterItem> _chapters = widget.chapters;

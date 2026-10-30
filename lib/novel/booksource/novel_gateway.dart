@@ -1,6 +1,8 @@
-/// 小说数据入口：内置站源走 Go 核心，自定义书源走本地规则引擎（0.7.68）。
+/// 小说数据入口：网文全部走自定义书源的本地规则引擎（0.7.85）。
 ///
-/// 书籍 ID 以 `bs.` 开头时说明是自定义书源的书，其余一律转给原仓库。
+/// 书籍 ID 以 `bs.` 开头时说明来自自定义书源；不带这个前缀的旧 ID 属于
+/// 0.7.85 之前的内置笔趣阁源，那个源已经整体移除，所以这里直接报「已失效」
+/// 而不是再去请求网络。本地导入的书不走这个类（由详情页直接读核心的索引）。
 library;
 
 import 'package:flutter/foundation.dart';
@@ -21,61 +23,44 @@ class BookSourceFailure {
 }
 
 class NovelGateway {
-  NovelGateway(
-    this.native, {
+  NovelGateway({
     BookSourceStore? store,
     this.engine = const BookSourceEngine(),
   }) : store = store ?? BookSourceStore.instance;
 
-  final AppRepository native;
   final BookSourceStore store;
   final BookSourceEngine engine;
 
   /// 最近一次搜索里失败的书源，便于界面提示「某些源没返回」。
   final List<BookSourceFailure> lastFailures = [];
 
-  /// 最近一次搜索实际用到的书源名（内置 + 自定义），界面用来提示「搜了哪些源」。
+  /// 最近一次搜索实际用到的书源名，界面用来提示「搜了哪些源」。
   final List<String> lastSources = [];
 
-  /// 搜索：内置站源 + 选中的自定义书源。
+  /// 内置源移除后，旧书架/旧搜索结果里残留的书会走到这里。
+  static const String removedNativeHint =
+      '这本书来自已移除的内置书源，请用自定义书源重新搜索一次';
+
+  /// 搜索：只搜自定义书源。
   ///
-  /// [includeNative] 为假时不打内置源；[customKeys] 为 null 表示所有启用且可用的
-  /// 自定义源，否则只搜其中这些 key。
-  Future<List<Novel>> search(
-    String query, {
-    bool includeCustom = true,
-    bool includeNative = true,
-    Set<String>? customKeys,
-  }) async {
+  /// [customKeys] 为 null 表示所有启用且可用的源，否则只搜其中这些 key。
+  Future<List<Novel>> search(String query, {Set<String>? customKeys}) async {
     lastFailures.clear();
     lastSources.clear();
     final results = <Novel>[];
 
-    if (includeNative) {
-      lastSources.add('内置');
-      try {
-        results.addAll(await native.novelSearch(query));
-      } catch (error) {
-        debugPrint('内置源搜索失败：$error');
-      }
-    }
+    await store.ensureLoaded();
+    final sources = store.usableSources
+        .where((source) => customKeys == null || customKeys.contains(source.key))
+        .toList(growable: false);
+    if (sources.isEmpty) return results;
 
-    if (includeCustom) {
-      await store.ensureLoaded();
-      final sources = store.usableSources
-          .where(
-            (source) => customKeys == null || customKeys.contains(source.key),
-          )
-          .toList(growable: false);
-      if (sources.isNotEmpty) {
-        lastSources.addAll(sources.map((source) => source.name));
-        final batches = await Future.wait([
-          for (final source in sources) _searchOne(source, query),
-        ]);
-        for (final batch in batches) {
-          results.addAll(batch);
-        }
-      }
+    lastSources.addAll(sources.map((source) => source.name));
+    final batches = await Future.wait([
+      for (final source in sources) _searchOne(source, query),
+    ]);
+    for (final batch in batches) {
+      results.addAll(batch);
     }
     return results;
   }
@@ -94,7 +79,7 @@ class NovelGateway {
   /// 详情（含目录）。
   Future<NovelBook> detail(String id) async {
     final target = BookSourceIds.decode(id);
-    if (target == null) return native.novelDetail(id);
+    if (target == null) throw AppFailure(removedNativeHint);
     final source = await _require(target.key);
     return engine.detail(source, target.url);
   }
@@ -102,7 +87,7 @@ class NovelGateway {
   /// 目录。
   Future<List<NovelChapterItem>> chapters(String id) async {
     final target = BookSourceIds.decode(id);
-    if (target == null) return native.novelChapters(id);
+    if (target == null) throw AppFailure(removedNativeHint);
     final source = await _require(target.key);
     final book = await engine.detail(source, target.url);
     return book.chapters;
@@ -111,7 +96,7 @@ class NovelGateway {
   /// 正文。
   Future<NovelText> content(String bookId, String chapterId) async {
     final target = BookSourceIds.decode(chapterId);
-    if (target == null) return native.novelContent(bookId, chapterId);
+    if (target == null) throw AppFailure(removedNativeHint);
     final source = await _require(target.key);
     return engine.content(source, bookId, target.url);
   }

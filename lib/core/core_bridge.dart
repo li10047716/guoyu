@@ -243,25 +243,9 @@ abstract class AppRepository {
   Future<CatalogPage> cached(String source, {String category = ''});
   Future<String> cover(Drama drama, {bool force = false});
 
-  // ---- 小说阅读（0.7.61）----
-  // 内置书源在 Go 核心里解析，Dart 侧只做展示与阅读交互。
-  Future<List<Novel>> novelSearch(String query) async =>
-      throw AppFailure('当前环境不支持小说搜索');
-  Future<NovelBook> novelDetail(String id) async =>
-      throw AppFailure('当前环境不支持小说阅读');
-  Future<List<NovelChapterItem>> novelChapters(String id) async =>
-      throw AppFailure('当前环境不支持小说阅读');
-  Future<NovelText> novelContent(String bookId, String chapterId) async =>
-      throw AppFailure('当前环境不支持小说阅读');
-
-  // ---- 书城分类 / 本地书（0.7.67）----
-  // libraryDir 由调用方给出（应用数据目录），核心不猜 Flutter 的路径。
-  Future<List<NovelCategory>> novelCategories() async =>
-      throw AppFailure('当前环境不支持小说分类');
-  Future<NovelPage> novelCategoryBooks(int categoryId, {int page = 1}) async =>
-      throw AppFailure('当前环境不支持小说分类');
-  Future<List<Novel>> novelRanking(int categoryId) async =>
-      throw AppFailure('当前环境不支持小说榜单');
+  // ---- 小说阅读（0.7.61，0.7.85 起只剩本地书）----
+  // 内置笔趣阁书源已在 0.7.85 移除，网文全部走 Dart 侧的自定义书源规则引擎；
+  // 这里只保留本地导入书籍的接口。
   Future<NovelBook> importLocalNovel(String libraryDir, String path) async =>
       throw AppFailure('当前环境不支持导入本地书籍');
   Future<List<NovelChapterItem>> localNovelChapters(
@@ -783,70 +767,7 @@ class NativeRepository extends AppRepository {
   );
 
   // ---- 小说阅读（0.7.61）----
-  @override
-  Future<List<Novel>> novelSearch(String query) async {
-    final data = await _call({'action': 'novelSearch', 'query': query});
-    return [
-      for (final row in data['items'] as List? ?? const [])
-        Novel.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
-  @override
-  Future<NovelBook> novelDetail(String id) async =>
-      NovelBook.fromJson(await _call({'action': 'novelDetail', 'novelId': id}));
-
-  @override
-  Future<List<NovelChapterItem>> novelChapters(String id) async {
-    final data = await _call({'action': 'novelChapters', 'novelId': id});
-    return [
-      for (final row in data['items'] as List? ?? const [])
-        NovelChapterItem.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
-  @override
-  Future<NovelText> novelContent(String bookId, String chapterId) async =>
-      NovelText.fromJson(
-        await _call({
-          'action': 'novelContent',
-          'novelId': bookId,
-          'chapterId': chapterId,
-        }),
-      );
-
-  // ---- 书城分类 / 本地书（0.7.67）----
-  @override
-  Future<List<NovelCategory>> novelCategories() async {
-    final data = await _call({'action': 'novelCategories'});
-    return [
-      for (final row in data['items'] as List? ?? const [])
-        NovelCategory.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
-  @override
-  Future<NovelPage> novelCategoryBooks(int categoryId, {int page = 1}) async =>
-      NovelPage.fromJson(
-        await _call({
-          'action': 'novelCategoryBooks',
-          'categoryId': categoryId,
-          'page': page,
-        }),
-      );
-
-  @override
-  Future<List<Novel>> novelRanking(int categoryId) async {
-    final data = await _call({
-      'action': 'novelRanking',
-      'categoryId': categoryId,
-    });
-    return [
-      for (final row in data['items'] as List? ?? const [])
-        Novel.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
+  // ---- 本地书（0.7.67）----
   @override
   Future<NovelBook> importLocalNovel(String libraryDir, String path) async =>
       NovelBook.fromJson(

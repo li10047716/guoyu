@@ -3,7 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:duanju_app/core/novel_models.dart';
+import 'package:duanju_app/novel/booksource/book_source.dart';
+import 'package:duanju_app/novel/booksource/book_source_engine.dart';
 import 'package:duanju_app/novel/booksource/book_source_store.dart';
+import 'package:duanju_app/novel/booksource/novel_gateway.dart';
 import 'package:duanju_app/novel/novel_detail_screen.dart';
 import 'package:duanju_app/novel/novel_home_screen.dart';
 import 'package:duanju_app/novel/novel_library.dart';
@@ -12,9 +15,11 @@ import 'package:duanju_app/novel/novel_store.dart';
 
 import 'fixtures.dart';
 
+/// 书架 / 进度 / 分组这些纯 store 测试只需要一个稳定的 key，
+/// 具体 id 长什么样无所谓；带 `bs.` 前缀是自定义书源书的形态。
 const _novel = Novel(
-  id: '1234',
-  source: 'biquge365',
+  id: 'bs.test.book',
+  source: 'bs:test',
   title: '合成小说',
   author: '合成作者',
   category: '玄幻',
@@ -29,30 +34,12 @@ const _chapters = [
 ];
 
 /// 小说相关的合成仓库：短剧部分沿用 [FixtureRepository] 的空实现。
+///
+/// 0.7.85 起网文全部走自定义书源的规则引擎（[BookSourceEngine]），
+/// 仓库只剩本地书那几个接口。
 class _NovelRepository extends FixtureRepository {
-  int searches = 0;
-  int detailRequests = 0;
-  int contentCalls = 0;
-  String lastQuery = '';
-
-  @override
-  Future<List<Novel>> novelSearch(String query) async {
-    searches++;
-    lastQuery = query;
-    return const [_novel];
-  }
-
-  @override
-  Future<NovelBook> novelDetail(String id) async {
-    detailRequests++;
-    return const NovelBook(novel: _novel, chapters: _chapters);
-  }
-
   int localContentCalls = 0;
   int localChapterCalls = 0;
-
-  @override
-  Future<List<NovelChapterItem>> novelChapters(String id) async => _chapters;
 
   @override
   Future<List<NovelChapterItem>> localNovelChapters(
@@ -77,13 +64,58 @@ class _NovelRepository extends FixtureRepository {
       paragraphs: const ['本地正文文案'],
     );
   }
+}
+
+/// 规则引擎的替身：不联网，直接返回合成的书。
+class _FakeEngine extends BookSourceEngine {
+  _FakeEngine();
+
+  /// 详情返回的目录，默认用常量那份（widget 测试里会替换成编码后的 id）。
+  List<NovelChapterItem> toc = _chapters;
+
+  /// 详情返回的书；测试里换成带真实 `bs.` id 的那本，否则阅读器解不出章节地址。
+  Novel? book;
+
+  int searches = 0;
+  int detailCalls = 0;
+  int contentCalls = 0;
+  String lastQuery = '';
 
   @override
-  Future<NovelText> novelContent(String bookId, String chapterId) async {
+  Future<List<Novel>> search(
+    BookSource source,
+    String query, {
+    int page = 1,
+  }) async {
+    searches++;
+    lastQuery = query;
+    return const [_novel];
+  }
+
+  @override
+  Future<NovelBook> detail(BookSource source, String bookUrl) async {
+    // ignore: avoid_print
+    detailCalls++;
+    return NovelBook(novel: book ?? _novel, chapters: toc);
+  }
+
+  @override
+  Future<List<Novel>> explore(
+    BookSource source,
+    String entryUrl, {
+    int page = 1,
+  }) async => const [];
+
+  @override
+  Future<NovelText> content(
+    BookSource source,
+    String bookId,
+    String chapterUrl,
+  ) async {
     contentCalls++;
     return NovelText(
       bookId: bookId,
-      chapterId: chapterId,
+      chapterId: chapterUrl,
       title: '第1章 开局',
       paragraphs: const ['第一段正文文案', '第二段正文文案'],
     );
@@ -96,6 +128,36 @@ Future<void> _settle(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 400));
 }
 
+/// 一个最小可用的自定义书源（带发现入口），测试里注册后 key 由地址算出来。
+const String _testSourceJson =
+    '[{"bookSourceName":"🧪测试源","bookSourceUrl":"https://example.com",'
+    '"searchUrl":"/search?q={{key}}",'
+    '"ruleSearch":{"bookList":"ul.list li","name":"@text",'
+    '"bookUrl":"a@href"},'
+    '"exploreUrl":"📊 榜单::\\n🔥 推荐榜::https://example.com?t=rank",'
+    '"ruleToc":{"chapterList":"dl dd","chapterName":"@text",'
+    '"chapterUrl":"a@href"},'
+    '"ruleContent":{"content":"#txt"}}]';
+
+Future<BookSource> _seedSource() async {
+  await BookSourceStore.instance.importText(_testSourceJson);
+  return BookSourceStore.instance.usableSources.single;
+}
+
+/// 自定义书源的章节 id 也是 `bs.` 编码的（规则引擎把每章地址编进 id），
+/// widget 测试里要按同样的形态造目录，否则网关解不出章节地址。
+List<NovelChapterItem> _chaptersOf(BookSource source) => [
+  for (var index = 0; index < _chapters.length; index++)
+    NovelChapterItem(
+      index: index,
+      id: BookSourceIds.encode(
+        source.key,
+        'https://example.com/book/1/${_chapters[index].id}.html',
+      ),
+      title: _chapters[index].title,
+    ),
+];
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -105,6 +167,8 @@ void main() {
     // widget 测试里没有 path_provider 也没有真实文件 IO 的事件循环，
     // 把章节缓存整体关掉——正文直接走仓库，缓存相关逻辑由 Go 侧测。
     NovelLibrary.debugSetDir(null);
+    // 书源清单同样不落盘，每个用例从空开始。
+    BookSourceStore.instance.debugSetDir(null);
   });
 
   test('书架与阅读进度落盘后能恢复', () async {
@@ -152,11 +216,16 @@ void main() {
 
   testWidgets('小说界面：书架 → 右上搜索 → 结果列表，没有返回按钮', (tester) async {
     final repository = _NovelRepository();
+    await _seedSource();
+    final engine = _FakeEngine();
     await tester.pumpWidget(
       MaterialApp(
         // 0.7.64：模块页不放返回；0.7.66：二级导航改成四个分区，
         // 搜索收进右上角的放大镜，页头不再重复写模块名。
-        home: NovelHomeScreen(repository: repository),
+        home: NovelHomeScreen(
+          repository: repository,
+          gateway: NovelGateway(engine: engine),
+        ),
       ),
     );
     await _settle(tester);
@@ -174,29 +243,30 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.search);
     await _settle(tester);
 
-    expect(repository.searches, 1);
-    expect(repository.lastQuery, '合成');
+    expect(engine.searches, 1);
+    expect(engine.lastQuery, '合成');
     expect(find.text('合成小说'), findsOneWidget);
   });
 
-  testWidgets('搜索面板能选书源：一个都没选时拦住搜索', (tester) async {
-    BookSourceStore.instance.debugSetDir(null);
+  testWidgets('搜索面板：没有书源时拦住搜索并提示去导入', (tester) async {
     final repository = _NovelRepository();
+    final engine = _FakeEngine();
     await tester.pumpWidget(
-      MaterialApp(home: NovelHomeScreen(repository: repository)),
+      MaterialApp(
+        home: NovelHomeScreen(
+          repository: repository,
+          gateway: NovelGateway(engine: engine),
+        ),
+      ),
     );
     await _settle(tester);
 
     await tester.tap(find.byKey(const ValueKey('novel-search-open')));
     await _settle(tester);
 
-    final nativeChip = find.byKey(const ValueKey('novel-search-source-native'));
-    expect(nativeChip, findsOneWidget);
-    expect(find.text('当前搜索范围：内置'), findsOneWidget);
-
-    await tester.tap(nativeChip);
-    await _settle(tester);
-    expect(find.text('还没选书源，点上面的标签勾一个'), findsOneWidget);
+    // 0.7.85：内置源移除后，一个源都没有时只剩这句提示。
+    expect(find.byKey(const ValueKey('novel-search-source-native')), findsNothing);
+    expect(find.text('还没有可用的书源，先到「我的 → 书源」导入'), findsOneWidget);
 
     await tester.enterText(
       find.byKey(const ValueKey('novel-search-field')),
@@ -205,31 +275,45 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.search);
     await _settle(tester);
 
-    // 没有勾任何源时不该发请求，而是提示先选源。
-    expect(repository.searches, 0);
-    expect(find.text('先在搜索框上方选一个书源'), findsOneWidget);
+    // 没有可用源时不该发请求，而是提示先导入。
+    expect(engine.searches, 0);
+    expect(find.text('还没有可用的书源，先在「我的 → 书源」里导入'), findsOneWidget);
+  });
+
+  testWidgets('搜索面板：有自定义源时列出源胶囊', (tester) async {
+    final repository = _NovelRepository();
+    final source = await _seedSource();
+    final engine = _FakeEngine();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NovelHomeScreen(
+          repository: repository,
+          gateway: NovelGateway(engine: engine),
+        ),
+      ),
+    );
+    await _settle(tester);
+
+    await tester.tap(find.byKey(const ValueKey('novel-search-open')));
+    await _settle(tester);
+    expect(
+      find.byKey(ValueKey('novel-search-source-${source.key}')),
+      findsOneWidget,
+    );
+    expect(find.text('当前搜索范围：1 个自定义源'), findsOneWidget);
   });
 
   testWidgets('发现页能列出带发现规则的自定义书源', (tester) async {
-    BookSourceStore.instance.debugSetDir(null);
-    // 一个最小可用的自定义源：有 exploreUrl 就能出现在发现页的源切换里。
-    await BookSourceStore.instance.importText(
-      '[' +
-          '{"bookSourceName":"🧪测试源","bookSourceUrl":"https://example.com",'
-              '"searchUrl":"/search?q={{key}}",'
-              '"ruleSearch":{"bookList":"ul.list li","name":"@text",'
-              '"bookUrl":"a@href"},'
-              '"exploreUrl":"📊 榜单::\\n🔥 推荐榜::https://example.com?t=rank",'
-              '"ruleToc":{"chapterList":"dl dd","chapterName":"@text",'
-              '"chapterUrl":"a@href"},'
-              '"ruleContent":{"content":"#txt"}}' +
-          ']',
-    );
-    final source = BookSourceStore.instance.usableSources.single;
+    final source = await _seedSource();
 
     final repository = _NovelRepository();
     await tester.pumpWidget(
-      MaterialApp(home: NovelHomeScreen(repository: repository)),
+      MaterialApp(
+        home: NovelHomeScreen(
+          repository: repository,
+          gateway: NovelGateway(engine: _FakeEngine()),
+        ),
+      ),
     );
     await _settle(tester);
 
@@ -242,28 +326,40 @@ void main() {
     );
     await _settle(tester);
 
-    // 内置源 + 自定义源各一个 chip
-    expect(
-      find.byKey(const ValueKey('discover-source-native')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(ValueKey('discover-source-${source.key}')),
-      findsOneWidget,
-    );
-    expect(find.text('🧪测试源'), findsOneWidget);
+    // 0.7.85：内置源已移除，切源条上只剩自定义源。
+    expect(find.byKey(const ValueKey('discover-source-native')), findsNothing);
+    // 只有一个源时不出切源条，但源名会作为分区标题出现。
+    expect(find.text('🧪测试源 · 发现'), findsOneWidget);
+    expect(source.name, '🧪测试源');
   });
 
   testWidgets('详情页显示目录，点「开始阅读」进阅读器', (tester) async {
     final repository = _NovelRepository();
+    // 0.7.85：网文走自定义书源，id 得带 `bs.` 前缀才能解出源和地址。
+    final source = await _seedSource();
+    final novel = Novel(
+      id: BookSourceIds.encode(source.key, 'https://example.com/book/1'),
+      source: source.sourceTag,
+      title: '合成小说',
+      author: '合成作者',
+      chapters: 3,
+    );
+    final engine = _FakeEngine();
+    engine.toc = _chaptersOf(source);
+    engine.book = novel;
+    final gateway = NovelGateway(engine: engine);
     await tester.pumpWidget(
       MaterialApp(
-        home: NovelDetailScreen(novel: _novel, repository: repository),
+        home: NovelDetailScreen(
+          novel: novel,
+          repository: repository,
+          gateway: gateway,
+        ),
       ),
     );
     await _settle(tester);
 
-    expect(repository.detailRequests, 1);
+    expect(engine.detailCalls, 1);
     expect(find.text('共 3 章'), findsOneWidget);
     expect(find.text('第2章 出手'), findsOneWidget);
 
@@ -272,20 +368,31 @@ void main() {
     await tester.pump(const Duration(milliseconds: 350));
     await _settle(tester);
 
-    expect(repository.contentCalls, 1);
+    // ignore: avoid_print
+    expect(engine.contentCalls, 1);
     expect(find.text('第一段正文文案'), findsOneWidget);
     expect(find.text('1 / 3'), findsOneWidget);
   });
 
   testWidgets('阅读器：下一章切换章节并推进进度', (tester) async {
     final repository = _NovelRepository();
+    final source = await _seedSource();
+    final engine = _FakeEngine();
+    final chapters = _chaptersOf(source);
+    final novel = Novel(
+      id: BookSourceIds.encode(source.key, 'https://example.com/book/1'),
+      source: source.sourceTag,
+      title: '合成小说',
+      chapters: 3,
+    );
     await tester.pumpWidget(
       MaterialApp(
         home: NovelReaderScreen(
-          novel: _novel,
-          chapters: _chapters,
+          novel: novel,
+          chapters: chapters,
           repository: repository,
           initialIndex: 0,
+          gateway: NovelGateway(engine: engine),
         ),
       ),
     );
@@ -296,9 +403,9 @@ void main() {
     await tester.tap(find.text('下一章').last);
     await _settle(tester);
 
-    expect(repository.contentCalls, 2);
+    expect(engine.contentCalls, 2);
     expect(find.text('2 / 3'), findsOneWidget);
-    expect(NovelStore.instance.progressOf(_novel.key)!.chapterIndex, 1);
+    expect(NovelStore.instance.progressOf(novel.key)!.chapterIndex, 1);
   });
   test('自定义分组：归档、删除分组后书回到全部', () async {
     final store = NovelStore.instance;
@@ -376,19 +483,22 @@ void main() {
       chapters: 3,
     );
     final repository = _NovelRepository();
+    final engine = _FakeEngine();
     await tester.pumpWidget(
       MaterialApp(
         home: NovelReaderScreen(
           novel: local,
           chapters: _chapters,
           repository: repository,
+          gateway: NovelGateway(engine: engine),
         ),
       ),
     );
     await _settle(tester);
 
     expect(repository.localContentCalls, 1);
-    expect(repository.contentCalls, 0);
+    // 本地书不碰规则引擎。
+    expect(engine.contentCalls, 0);
     expect(find.text('本地正文文案'), findsOneWidget);
   });
 }

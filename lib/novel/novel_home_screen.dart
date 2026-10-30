@@ -55,10 +55,14 @@ class NovelHomeScreen extends StatefulWidget {
     required this.repository,
     this.embedded = false,
     this.headerActions = const [],
+    this.gateway,
   });
 
   final AppRepository repository;
   final bool embedded;
+
+  /// 测试注入用；生产环境留空，自己建一个。
+  final NovelGateway? gateway;
 
   /// 页头右侧的额外操作（0.7.74）：手机端模块切换条挪进顶栏后，
   /// 小说页在窄屏布局里把这几个控件拼在顶部标签行尾，
@@ -74,7 +78,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   final _focus = FocusNode();
 
   /// 数据入口：内置站源走核心，自定义书源走本地规则引擎（0.7.68）。
-  late final NovelGateway _gateway = NovelGateway(widget.repository);
+  late final NovelGateway _gateway = widget.gateway ?? NovelGateway();
 
   List<Novel> _results = const [];
   bool _searching = false;
@@ -100,8 +104,8 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
   /// 搜索以覆盖层方式占满内容区（不是独立页面，切分区时自动关掉）。
   bool _searchOpen = false;
 
-  /// 搜索用的书源选择：内置源是否参与、自定义源选哪几个（null = 全部启用的源）。
-  bool _searchNative = true;
+  /// 搜索用的书源选择：自定义源选哪几个（null = 全部启用的源）。
+  /// 0.7.85：内置源已移除，这里只剩自定义源。
   Set<String>? _searchCustomKeys;
 
   /// 上次搜索实际用到的源数量，结果区下面用来提示。
@@ -132,7 +136,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       if (data is! Map) return;
       if (!mounted) return;
       setState(() {
-        _searchNative = data['native'] != false;
         final custom = data['custom'];
         // `*` 表示「全部启用的自定义源」，不记具体 key，新增源自动纳入。
         _searchCustomKeys = custom == '*'
@@ -152,7 +155,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       await preferences.setString(
         _searchPrefsKey,
         jsonEncode({
-          'native': _searchNative,
           'custom': _searchCustomKeys == null
               ? '*'
               : _searchCustomKeys!.toList(),
@@ -170,11 +172,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       for (final source in BookSourceStore.instance.usableSources) source.key,
     };
     return _searchCustomKeys!.where(available.contains).toSet();
-  }
-
-  void _toggleSearchNative() {
-    setState(() => _searchNative = !_searchNative);
-    unawaited(_saveSearchSources());
   }
 
   void _toggleSearchSource(String key) {
@@ -219,10 +216,10 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     final customCount = customKeys == null
         ? BookSourceStore.instance.usableSources.length
         : customKeys.length;
-    if (!_searchNative && customCount == 0) {
+    if (customCount == 0) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         const SnackBar(
-          content: Text('先在搜索框上方选一个书源'),
+          content: Text('还没有可用的书源，先在「我的 → 书源」里导入'),
           duration: Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
         ),
@@ -237,11 +234,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
       _searched = true;
     });
     try {
-      final items = await _gateway.search(
-        query,
-        includeNative: _searchNative,
-        customKeys: customKeys,
-      );
+      final items = await _gateway.search(query, customKeys: customKeys);
       if (!mounted) return;
       setState(() {
         _results = items;
@@ -944,7 +937,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         );
       case _NovelSection.discover:
         return _DiscoverPage(
-          repository: widget.repository,
           gateway: _gateway,
           onOpenSearch: _openSearch,
           onOpenNovel: _openNovel,
@@ -1020,14 +1012,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
             children: [
-              FilterChip(
-                key: const ValueKey('novel-search-source-native'),
-                label: const Text('内置', style: TextStyle(fontSize: 12)),
-                selected: _searchNative,
-                onSelected: (_) => _toggleSearchNative(),
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
               for (final source in custom) ...[
                 const SizedBox(width: 8),
                 FilterChip(
@@ -1092,12 +1076,8 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     final picked = _searchCustomKeys == null
         ? custom.length
         : (_effectiveCustomKeys()?.length ?? 0);
-    final parts = <String>[
-      if (_searchNative) '内置',
-      if (picked > 0) '$picked 个自定义源',
-    ];
-    if (parts.isEmpty) return '还没选书源，点上面的标签勾一个';
-    return '当前搜索范围：${parts.join(' + ')}';
+    if (picked == 0) return '还没有可用的书源，先到「我的 → 书源」导入';
+    return '当前搜索范围：$picked 个自定义源';
   }
 
   Widget _searchBody(ColorScheme colors) {
@@ -1539,13 +1519,11 @@ Widget _cover(BuildContext context, Novel novel, ColorScheme colors) {
 /// 内置源和自定义源的发现页各走一套数据。
 class _DiscoverPage extends StatefulWidget {
   const _DiscoverPage({
-    required this.repository,
     required this.gateway,
     required this.onOpenSearch,
     required this.onOpenNovel,
   });
 
-  final AppRepository repository;
   final NovelGateway gateway;
   final VoidCallback onOpenSearch;
   final ValueChanged<Novel> onOpenNovel;
@@ -1557,21 +1535,12 @@ class _DiscoverPage extends StatefulWidget {
 class _DiscoverPageState extends State<_DiscoverPage> {
   final _scroll = ScrollController();
 
-  /// 上次选的发现源（'' = 内置）。这个选择持久化，下次进来还是它。
+  /// 上次选的发现源（自定义书源的 key）。持久化，下次进来还是它。
   static const String _sourcePrefKey = 'novel.discoverSource.v1';
-
-  List<NovelCategory> _categories = const [];
-  int? _categoryId;
-  List<Novel> _ranking = const [];
-  List<Novel> _books = const [];
-  int _page = 1;
-  int _pages = 0;
-  bool _loading = true;
-  bool _loadingMore = false;
-  String? _error;
 
   // ── 自定义书源的发现 ────────────────────────────────────────────────
   List<BookSource> _sources = const [];
+  bool _sourcesLoaded = false;
   String _sourceKey = '';
   List<BookSourceExploreEntry> _entries = const [];
   String _entryUrl = '';
@@ -1600,11 +1569,7 @@ class _DiscoverPageState extends State<_DiscoverPage> {
   void _onScroll() {
     if (!_scroll.hasClients) return;
     if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 420) {
-      if (_sourceKey.isEmpty) {
-        unawaited(_loadMore());
-      } else {
-        unawaited(_loadCustomMore());
-      }
+      unawaited(_loadCustomMore());
     }
   }
 
@@ -1615,10 +1580,7 @@ class _DiscoverPageState extends State<_DiscoverPage> {
     return null;
   }
 
-  Future<void> _bootstrap() async {
-    unawaited(_loadSources());
-    await _loadNative();
-  }
+  Future<void> _bootstrap() => _loadSources();
 
   Future<void> _loadSources() async {
     try {
@@ -1626,25 +1588,27 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       if (!mounted) return;
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getString(_sourcePrefKey) ?? '';
-      setState(() => _sources = sources);
-      if (saved.isNotEmpty && sources.any((s) => s.key == saved)) {
-        await _selectSource(saved);
-      }
+      setState(() {
+        _sources = sources;
+        _sourcesLoaded = true;
+      });
+      if (sources.isEmpty) return;
+      // 记着的源还在就用它，否则（首次进入 / 源被删）落到第一个可用源。
+      final target = sources.any((s) => s.key == saved)
+          ? saved
+          : sources.first.key;
+      await _selectSource(target);
     } catch (error) {
+      if (mounted) setState(() => _sourcesLoaded = true);
       debugPrint('发现页书源列表加载失败：$error');
     }
   }
 
-  /// 切发现源：'' = 内置站点，其余为自定义书源的 key。
+  /// 切发现源（自定义书源的 key）。
   Future<void> _selectSource(String key) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_sourcePrefKey, key);
     if (!mounted) return;
-    if (key.isEmpty) {
-      setState(() => _sourceKey = '');
-      await _loadNative();
-      return;
-    }
     final source = _sources.firstWhere(
       (s) => s.key == key,
       orElse: () => const BookSource(key: '', name: '', url: ''),
@@ -1654,14 +1618,9 @@ class _DiscoverPageState extends State<_DiscoverPage> {
         ? const <BookSourceExploreEntry>[]
         : await widget.gateway.exploreEntries(source);
     if (!mounted) return;
-    if (entries.isEmpty) {
-      setState(() => _sourceKey = '');
-      return;
-    }
-    final first = entries.firstWhere(
-      (e) => !e.isHeader,
-      orElse: () => entries.first,
-    );
+    final first = entries.isEmpty
+        ? null
+        : entries.firstWhere((e) => !e.isHeader, orElse: () => entries.first);
     setState(() {
       _sourceKey = key;
       _entries = entries;
@@ -1672,7 +1631,9 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       _customHasMore = false;
       _customError = null;
     });
-    if (!first.isHeader) await _loadEntry(first.url, first.name);
+    if (first != null && !first.isHeader) {
+      await _loadEntry(first.url, first.name);
+    }
   }
 
   /// 加载（或翻页）某个发现条目。
@@ -1733,95 +1694,6 @@ class _DiscoverPageState extends State<_DiscoverPage> {
     await _loadEntry(_entryUrl, _entryName, more: true);
   }
 
-  Future<void> _loadNative() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-      _ranking = const [];
-      _books = const [];
-      _page = 1;
-      _pages = 0;
-    });
-    try {
-      final categories = await widget.repository.novelCategories();
-      if (!mounted) return;
-      if (categories.isEmpty) {
-        setState(() {
-          _loading = false;
-          _error = '书源没有返回分类，稍后再试';
-        });
-        return;
-      }
-      setState(() {
-        _categories = categories;
-        _categoryId = categories.first.id;
-      });
-      await _loadCategory(categories.first.id);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = '$error'.replaceFirst('AppFailure: ', '');
-      });
-    }
-  }
-
-  Future<void> _loadCategory(int id) async {
-    setState(() {
-      _categoryId = id;
-      _loading = true;
-      _error = null;
-      _ranking = const [];
-      _books = const [];
-      _page = 1;
-      _pages = 0;
-    });
-    try {
-      // 排行挂了不影响书籍列表，各自兜底。
-      final ranking = await widget.repository
-          .novelRanking(id)
-          .catchError((Object _) => <Novel>[]);
-      final page = await widget.repository.novelCategoryBooks(id, page: 1);
-      if (!mounted || _categoryId != id) return;
-      setState(() {
-        _ranking = ranking;
-        _books = page.items;
-        _page = page.page;
-        _pages = page.pages;
-        _loading = false;
-      });
-    } catch (error) {
-      if (!mounted || _categoryId != id) return;
-      setState(() {
-        _loading = false;
-        _error = '$error'.replaceFirst('AppFailure: ', '');
-      });
-    }
-  }
-
-  Future<void> _loadMore() async {
-    final id = _categoryId;
-    if (id == null || _loading || _loadingMore) return;
-    if (_pages == 0 || _page >= _pages) return;
-    setState(() => _loadingMore = true);
-    try {
-      final page = await widget.repository.novelCategoryBooks(
-        id,
-        page: _page + 1,
-      );
-      if (!mounted || _categoryId != id) return;
-      setState(() {
-        _books = [..._books, ...page.items];
-        _page = page.page;
-        _pages = page.pages;
-        _loadingMore = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loadingMore = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1830,12 +1702,55 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
       children: [
         _searchBox(colors),
-        if (_sources.isNotEmpty) _sourceBar(colors),
-        ...(_sourceKey.isEmpty
-            ? _nativeSections(colors)
-            : _customSections(colors)),
+        if (_sources.length > 1) _sourceBar(colors),
+        ..._body(colors),
       ],
     );
+  }
+
+  List<Widget> _body(ColorScheme colors) {
+    if (!_sourcesLoaded) {
+      return const [
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: 48),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ];
+    }
+    if (_sources.isEmpty) {
+      return [
+        const _SectionTitle('发现'),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 12),
+          child: Column(
+            children: [
+              Icon(
+                Icons.travel_explore_rounded,
+                size: 34,
+                color: colors.onSurfaceVariant.withValues(alpha: .45),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '还没有带「发现」入口的书源',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '在「我的 → 书源」导入书源后，这里会列出它自己的分类和书单；'
+                '也可以直接用上面的搜索找书。',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.6,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ];
+    }
+    return _customSections(colors);
   }
 
   Widget _searchBox(ColorScheme colors) {
@@ -1871,7 +1786,7 @@ class _DiscoverPageState extends State<_DiscoverPage> {
     );
   }
 
-  /// 顶部发现源切换：内置 + 每个带发现入口的自定义书源。
+  /// 顶部发现源切换：每个带发现入口的自定义书源。
   Widget _sourceBar(ColorScheme colors) {
     return Padding(
       padding: const EdgeInsets.only(top: 10),
@@ -1880,7 +1795,6 @@ class _DiscoverPageState extends State<_DiscoverPage> {
         child: ListView(
           scrollDirection: Axis.horizontal,
           children: [
-            _sourceChip('', '内置', colors),
             for (final source in _sources)
               _sourceChip(source.key, source.name, colors),
           ],
@@ -1900,7 +1814,7 @@ class _DiscoverPageState extends State<_DiscoverPage> {
         borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          key: ValueKey('discover-source-${key.isEmpty ? 'native' : key}'),
+          key: ValueKey('discover-source-$key'),
           onTap: () => unawaited(_selectSource(key)),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 13),
@@ -1918,104 +1832,6 @@ class _DiscoverPageState extends State<_DiscoverPage> {
         ),
       ),
     );
-  }
-
-  // ── 内置源：分类 + 收藏排行 + 书籍 ────────────────────────────────────
-  List<Widget> _nativeSections(ColorScheme colors) {
-    return [
-      if (_categories.isNotEmpty) ...[
-        const _SectionTitle('分类'),
-        SizedBox(
-          height: 34,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: _categories.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 8),
-            itemBuilder: (context, index) {
-              final category = _categories[index];
-              final selected = category.id == _categoryId;
-              return Material(
-                color: selected
-                    ? colors.primary.withValues(alpha: .16)
-                    : colors.surfaceContainerHighest.withValues(alpha: .45),
-                borderRadius: BorderRadius.circular(17),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  key: ValueKey('discover-category-${category.id}'),
-                  onTap: () => _loadCategory(category.id),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 13),
-                    child: Center(
-                      child: Text(
-                        category.name,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: selected
-                              ? colors.primary
-                              : colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-      if (_loading)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 48),
-          child: Center(child: CircularProgressIndicator()),
-        )
-      else if (_error != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 40),
-          child: Column(
-            children: [
-              Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: TextStyle(color: colors.onSurfaceVariant),
-              ),
-              const SizedBox(height: 14),
-              OutlinedButton(
-                onPressed: () => unawaited(_loadNative()),
-                child: const Text('重试'),
-              ),
-            ],
-          ),
-        )
-      else ...[
-        if (_ranking.isNotEmpty) ...[
-          const _SectionTitle('收藏排行'),
-          for (var i = 0; i < _ranking.length && i < 10; i++)
-            _RankRow(
-              index: i,
-              novel: _ranking[i],
-              onTap: () => widget.onOpenNovel(_ranking[i]),
-            ),
-        ],
-        const _SectionTitle('更多书籍'),
-        _bookGrid(_books, colors, keyPrefix: 'discover-book'),
-        if (_loadingMore)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            child: Center(
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          )
-        else if (_pages > 0 && _page >= _pages)
-          _endNote('已经到底了 · 共 $_pages 页', colors),
-      ],
-    ];
   }
 
   // ── 自定义书源：它自己的发现分类 + 书单 ──────────────────────────────
@@ -2204,66 +2020,6 @@ class _DiscoverPageState extends State<_DiscoverPage> {
           style: TextStyle(
             fontSize: 11.5,
             color: colors.onSurfaceVariant.withValues(alpha: .7),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 收藏排行的一行：序号 + 书名，前三名用主色。
-class _RankRow extends StatelessWidget {
-  const _RankRow({
-    required this.index,
-    required this.novel,
-    required this.onTap,
-  });
-
-  final int index;
-  final Novel novel;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final top = index < 3;
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 24,
-                child: Text(
-                  '${index + 1}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: top
-                        ? colors.primary
-                        : colors.onSurfaceVariant.withValues(alpha: .55),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Text(
-                  novel.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13.5),
-                ),
-              ),
-              Icon(
-                Icons.chevron_right_rounded,
-                size: 16,
-                color: colors.onSurfaceVariant.withValues(alpha: .5),
-              ),
-            ],
           ),
         ),
       ),
