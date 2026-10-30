@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.83+143** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.7.84+144** ｜ 平台：Android 8.0+（arm64-v8a）／ Windows x64 ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,7 +14,43 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.83）
+## 二、本次更新（0.7.84）
+
+**自定义书源：补齐「阅读」脚本里缺的那批 Legado 扩展函数，并放宽 TLS 证书校验。**
+
+这一版是纯兼容性增强，目标是把「能解析、但脚本一跑就报 `xxx is not defined`」的源救回来。
+按上版探测数据，脚本类报错占所有失败的三成左右，是当前最大的一块可补缺口。
+
+- **规则取值函数**：`java.getString(rule)` / `getStringList` / `getElements` / `getElement`
+  （以及元素上的同名方法）。以前调到就是 `Object has no member 'getString'`；
+  现在原生核心里有一份和 Dart 侧同语义的规则求值器（CSS / JSONPath / `@` 取值 /
+  `&&` 接续 / `||` 兜底 / `##正则##替换` / `{{模板}}`），全链路可用。
+- **`java.get` / `java.post` 返回 Response 对象**：支持 `resp.body()`、`resp.header('location')`、
+  `resp.code()`；同时保留字符串语义（`String(resp)`、`resp.trim()` 等仍然返回正文），
+  老写法不会被打断。`java.get(url, headers)` 不再跟随跳转，脚本能读到 `location` 做二次请求。
+- **CryptoJS 补齐**：`CryptoJS.enc.Utf8/Base64/Hex.parse|stringify`、`MD5/SHA1/SHA256/SHA512`、
+  `HmacMD5/HmacSHA1/HmacSHA256/HmacSHA512`、`AES/DES/TripleDES.encrypt|decrypt`、
+  `pad.Pkcs7/NoPadding`、`mode.CBC/ECB/CTR/CFB/OFB`、`lib.WordArray.create`。
+- **Java 加密类补齐**：新增 `javax.crypto.Mac`（HmacSHA1/256/512、HmacMD5）；
+  `Cipher` 从「只支持 AES-CBC/ECB/CTR」扩到 **GCM / CFB / OFB + DES / 3DES + NoPadding**；
+  `SecretKeySpec` 记录算法名，`getAlgorithm()` 可用。
+- **其它常用扩展**：`java.t2s` 繁转简（内置 OpenCC 单字表 3221 条）、
+  `java.strToBytes` / `bytesToStr`（带字符集）、`java.createSymmetricCrypto`、
+  `java.timeFormatUTC`、`java.getUrl`、`java.hexEncodeToString`。
+- **`source` / `book` 对象补成员**：`source.getVariable()` 无参返回整份 JSON、
+  `getHeaderMap` / `getBookSourceUrl` / `getBookSourceName`、登录信息一组
+  （`getLoginInfoMap` / `getLoginHeader` / `putLoginInfo` …，本 App 无内嵌浏览器登录，统一给空值）、
+  `book.type` / `tocUrl` / `setType` / `putVariable`。
+- **jsoup 补方法**：`Jsoup.parseBodyFragment`、`Elements.add/addAll`（书源常 `new Elements()`
+  再拼几组选择结果）、`Elements.select/remove/outerHtml`、`Element.getString/getElements`、
+  `Element.remove()`、`org.jsoup.select.Elements` 与 `org.jsoup.nodes.*` 命名空间、
+  `Packages.org.jsoup` 路径。
+- **`java.ajax` 支持 `charset` 选项**：以前忽略，GBK 站点会拿到乱码。
+- **TLS 放宽**：一批老书源站用过期/自签证书，严格校验下握手直接失败（`CERTIFICATE_VERIFY_FAILED`）。
+  现在 Dart 抓取层与原生 `java.ajax` 都在**首次因证书失败时**自动用宽松模式重试一次，
+  正常站点仍走严格校验（不动 App 更新、媒体下载那些链路）。
+
+## 三、上一版更新（0.7.83）
 
 **自定义书源：支持脚本 / JSON 形式的「发现页」地址（原来直接报「地址不合法」）。**
 
@@ -27,9 +63,7 @@
 - 顺带补了一个批量探测工具（`test/source_coverage_probe_test.dart`），
   可以对着一批书源 JSON 跑「发现 → 搜索 → 详情 → 目录 → 正文」并出报告。
 
-## 三、上一版更新（0.7.82）
-
-**小说板块细节收口 + 修掉自定义书源「发现页打开失败（HTTP 404）」。**
+### 0.7.82：小说板块细节收口 + 修掉自定义书源「发现页打开失败（HTTP 404）」
 
 - **修：发现页 404**。有些导出的书源把 `exploreUrl` 的多条发现条目压在一行、
   用 `&&` 连接（`玄幻::https://a/1.html&&修真::https://a/2.html`）。解析时只按
@@ -851,6 +885,7 @@ python3 scripts/build_android.py --abi arm64-v8a
 
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
+| 0.7.84 | 2026-10-30 | 书源脚本补齐 Legado 扩展函数：`java.getString/getElements`、`java.get/post` 返回 Response、CryptoJS 全套、`javax.crypto.Mac`、Cipher 的 GCM/CTR/DES、`java.t2s`、jsoup 的 parseBodyFragment / Elements.addAll 等；Dart 与原生两层在证书失败时自动宽松重试 |
 | 0.7.83 | 2026-10-30 | 自定义书源：支持 JSON 数组 / `<js>` 脚本形式的 `exploreUrl`（原来发现页报「地址不合法」）；新增书源批量探测工具 |
 | 0.7.82 | 2026-10-30 | 修自定义书源发现页 404（`exploreUrl` 用 `&&` 压成一行时条目解析错乱）；书架筛选只留自定义分组；工具条改为三个独立圆形按钮；「我的」去掉内置书源卡 |
 | 0.7.81 | 2026-10-30 | 小说：去掉「探索」分区；书架工具条精简为「视图/搜索 + 更多」并贴右上角，分组筛选挪进「更多」菜单；修复页头 Flexible 抢占 Spacer 空间导致工具条无法贴右的布局 bug（0.7.67 起） |

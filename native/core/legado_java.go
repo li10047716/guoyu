@@ -19,8 +19,6 @@ package core
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
@@ -620,10 +618,18 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string, client *http.Client)
 	register("javax.crypto.spec.SecretKeySpec", map[string]interface{}{
 		"__ctor": func(call goja.ConstructorCall) *goja.Object {
 			key := legadoBytesOf(call.Argument(0))
+			algorithm := ""
+			if len(call.Arguments) > 1 {
+				algorithm = call.Argument(1).String()
+			}
 			object := vm.NewObject()
 			_ = object.Set("__key", legadoByteArray(vm, key))
+			_ = object.Set("__algorithm", algorithm)
 			_ = object.Set("getEncoded", func(goja.FunctionCall) goja.Value {
 				return vm.ToValue(legadoByteArray(vm, key))
+			})
+			_ = object.Set("getAlgorithm", func(goja.FunctionCall) goja.Value {
+				return vm.ToValue(algorithm)
 			})
 			return object
 		},
@@ -672,6 +678,35 @@ func legadoPackagesObject(vm *goja.Runtime, baseURL string, client *http.Client)
 			})
 			_ = object.Set("getBlockSize", func(goja.FunctionCall) goja.Value {
 				return vm.ToValue(int64(16))
+			})
+			return vm.ToValue(object)
+		},
+	})
+
+	// ---- javax.crypto.Mac（HMAC 签名，聚合源签名常用） ----
+	register("javax.crypto.Mac", map[string]interface{}{
+		"getInstance": func(call goja.FunctionCall) goja.Value {
+			algorithm := strings.TrimSpace(call.Argument(0).String())
+			object := vm.NewObject()
+			var key []byte
+			_ = object.Set("init", func(call goja.FunctionCall) goja.Value {
+				argument := call.Argument(0)
+				if object, ok := argument.(*goja.Object); ok {
+					key = legadoBytesOf(object.Get("__key"))
+				} else {
+					key = legadoBytesOf(argument)
+				}
+				return goja.Undefined()
+			})
+			_ = object.Set("doFinal", func(call goja.FunctionCall) goja.Value {
+				payload := legadoBytesOf(call.Argument(0))
+				return vm.ToValue(legadoByteArray(vm, legadoHmac(algorithm, key, payload)))
+			})
+			_ = object.Set("update", func(call goja.FunctionCall) goja.Value {
+				return goja.Undefined()
+			})
+			_ = object.Set("getAlgorithm", func(goja.FunctionCall) goja.Value {
+				return vm.ToValue(algorithm)
 			})
 			return vm.ToValue(object)
 		},
@@ -1055,79 +1090,12 @@ func legadoDigestBytes(algorithm string, payload []byte) []byte {
 	return sum[:]
 }
 
-// legadoCipher 实现 javax.crypto.Cipher 的 AES 加解密。
+// legadoCipher 实现 javax.crypto.Cipher 的加解密。
+//
+// 具体算法/模式在 legadoBlockCrypt 里：AES / DES / 3DES，CBC / ECB / CTR /
+// CFB / OFB / GCM，PKCS5(7) 填充与 NoPadding 都支持。
 func legadoCipher(transformation string, mode int64, key, iv, payload []byte) ([]byte, error) {
-	parts := strings.Split(transformation, "/")
-	algorithm := parts[0]
-	if algorithm != "AES" {
-		return nil, fmt.Errorf("不支持的加密算法：%s", transformation)
-	}
-	modeName := "CBC"
-	if len(parts) > 1 {
-		modeName = parts[1]
-	}
-	padding := "PKCS5PADDING"
-	if len(parts) > 2 {
-		padding = strings.ReplaceAll(parts[2], "-", "")
-	}
-	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
-		return nil, fmt.Errorf("AES 密钥长度不对：%d", len(key))
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	encrypting := mode != 2
-
-	switch modeName {
-	case "CBC":
-		if len(iv) == 0 {
-			return nil, fmt.Errorf("AES/CBC 缺少 IV")
-		}
-		if encrypting && padding == "PKCS5PADDING" {
-			payload = legadoPKCS7Pad(payload, block.BlockSize())
-		}
-		if len(payload)%block.BlockSize() != 0 {
-			return nil, fmt.Errorf("AES/CBC 数据长度不是块大小的整数倍：%d", len(payload))
-		}
-		out := make([]byte, len(payload))
-		if encrypting {
-			cipher.NewCBCEncrypter(block, iv).CryptBlocks(out, payload)
-			return out, nil
-		}
-		cipher.NewCBCDecrypter(block, iv).CryptBlocks(out, payload)
-		if padding == "PKCS5PADDING" {
-			out = legadoPKCS7Unpad(out)
-		}
-		return out, nil
-	case "ECB":
-		if encrypting && padding == "PKCS5PADDING" {
-			payload = legadoPKCS7Pad(payload, block.BlockSize())
-		}
-		if len(payload)%block.BlockSize() != 0 {
-			return nil, fmt.Errorf("AES/ECB 数据长度不是块大小的整数倍：%d", len(payload))
-		}
-		out := make([]byte, len(payload))
-		for offset := 0; offset < len(payload); offset += block.BlockSize() {
-			if encrypting {
-				block.Encrypt(out[offset:offset+block.BlockSize()], payload[offset:offset+block.BlockSize()])
-			} else {
-				block.Decrypt(out[offset:offset+block.BlockSize()], payload[offset:offset+block.BlockSize()])
-			}
-		}
-		if !encrypting && padding == "PKCS5PADDING" {
-			out = legadoPKCS7Unpad(out)
-		}
-		return out, nil
-	case "CTR":
-		if len(iv) == 0 {
-			return nil, fmt.Errorf("AES/CTR 缺少 IV")
-		}
-		out := make([]byte, len(payload))
-		cipher.NewCTR(block, iv).XORKeyStream(out, payload)
-		return out, nil
-	}
-	return nil, fmt.Errorf("不支持的加密模式：%s", transformation)
+	return legadoBlockCrypt(transformation, mode, key, iv, payload)
 }
 
 func legadoPKCS7Pad(payload []byte, blockSize int) []byte {

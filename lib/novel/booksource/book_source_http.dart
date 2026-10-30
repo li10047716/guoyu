@@ -81,7 +81,7 @@ class BookSourceHttp {
     }
 
     for (var hop = 0; hop <= 6; hop++) {
-      final sent = await _send(
+      final sent = await _sendWithTlsFallback(
         currentUrl,
         currentMethod,
         currentBody,
@@ -135,7 +135,12 @@ class BookSourceHttp {
     }
   }
 
-  static Future<({FetchResult result, String? location})> _send(
+  /// 先按严格证书校验抓；证书过期/自签的站点再用宽松模式重试一次。
+  ///
+  /// 一批书源站用的是过期或自签证书，严格校验下握手直接失败，
+  /// 但这些站点的内容是公开的，阅读类 App 普遍允许放宽。
+  /// 只对书源抓取生效，且**只在首次因证书失败时**回退，不影响其它请求。
+  static Future<({FetchResult result, String? location})> _sendWithTlsFallback(
     String url,
     String method,
     String? body,
@@ -143,9 +148,36 @@ class BookSourceHttp {
     String charset,
     Duration timeout,
   ) async {
+    try {
+      return await _send(url, method, body, headers, charset, timeout);
+    } on HandshakeException {
+      return _send(
+        url,
+        method,
+        body,
+        headers,
+        charset,
+        timeout,
+        lenientTls: true,
+      );
+    }
+  }
+
+  static Future<({FetchResult result, String? location})> _send(
+    String url,
+    String method,
+    String? body,
+    Map<String, String> headers,
+    String charset,
+    Duration timeout, {
+    bool lenientTls = false,
+  }) async {
     final client = HttpClient()
       ..connectionTimeout = timeout
       ..userAgent = headers['User-Agent'] ?? defaultUserAgent;
+    if (lenientTls) {
+      client.badCertificateCallback = (cert, host, port) => true;
+    }
     try {
       final request = await client.openUrl(method, Uri.parse(url));
       request.followRedirects = false;

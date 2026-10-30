@@ -222,6 +222,57 @@ func legadoWrapNode(vm *goja.Runtime, node *html.Node, baseURL string) *goja.Obj
 	_ = object.Set("getElementsByTag", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(legadoWrapNodes(vm, legadoQuery(node, call.Argument(0).String()), baseURL))
 	})
+	// 阅读的脚本扩展：在当前元素上按规则取值（getString('tag.a@href')）。
+	_ = object.Set("getString", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoRuleString(call.Argument(0).String(), legadoNodeRuleContext(node, baseURL)))
+	})
+	_ = object.Set("getStringList", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoRuleStrings(call.Argument(0).String(), legadoNodeRuleContext(node, baseURL)))
+	})
+	_ = object.Set("getElements", func(call goja.FunctionCall) goja.Value {
+		nodes := legadoRuleNodes(call.Argument(0).String(), legadoNodeRuleContext(node, baseURL))
+		return vm.ToValue(legadoWrapNodes(vm, nodes, baseURL))
+	})
+	_ = object.Set("getElementsByClass", func(call goja.FunctionCall) goja.Value {
+		selector := "." + strings.ReplaceAll(strings.TrimSpace(call.Argument(0).String()), " ", ".")
+		return vm.ToValue(legadoWrapNodes(vm, legadoQuery(node, selector), baseURL))
+	})
+	_ = object.Set("getElementsByAttribute", func(call goja.FunctionCall) goja.Value {
+		name := strings.TrimSpace(call.Argument(0).String())
+		value := ""
+		if len(call.Arguments) > 1 {
+			value = call.Argument(1).String()
+		}
+		selector := "[" + name + "]"
+		matched := legadoQuery(node, selector)
+		if value == "" {
+			return vm.ToValue(legadoWrapNodes(vm, matched, baseURL))
+		}
+		filtered := make([]*html.Node, 0, len(matched))
+		for _, candidate := range matched {
+			if strings.Contains(legadoAttr(candidate, name), value) {
+				filtered = append(filtered, candidate)
+			}
+		}
+		return vm.ToValue(legadoWrapNodes(vm, filtered, baseURL))
+	})
+	_ = object.Set("getAllElements", func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoWrapNodes(vm, legadoQuery(node, "*"), baseURL))
+	})
+	_ = object.Set("string", func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(legadoNodeText(node))
+	})
+	// remove()：从文档里摘掉节点（漫画源常先删掉广告块再取 html）。
+	_ = object.Set("remove", func(goja.FunctionCall) goja.Value {
+		if node.Parent != nil {
+			node.Parent.RemoveChild(node)
+		}
+		return goja.Undefined()
+	})
+	_ = object.Set("clone", func(goja.FunctionCall) goja.Value {
+		copied := *node
+		return vm.ToValue(legadoWrapNode(vm, &copied, baseURL))
+	})
 	_ = object.Set("parent", func(call goja.FunctionCall) goja.Value {
 		if node.Parent == nil {
 			return goja.Null()
@@ -264,6 +315,10 @@ func legadoWrapNode(vm *goja.Runtime, node *html.Node, baseURL string) *goja.Obj
 	// 让 `String(element)` / `element + ''` 得到 outerHTML，和 jsoup 一致
 	_ = object.Set("valueOf", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(legadoElementHTML(node))
+	})
+	// __self 是给 Elements.add / addAll 用的内部访问器
+	_ = object.Set("__self", func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(node)
 	})
 	return object
 }
@@ -333,6 +388,42 @@ func legadoWrapNodes(vm *goja.Runtime, nodes []*html.Node, baseURL string) *goja
 		}
 		return vm.ToValue("")
 	})
+	// Elements 上继续 select（jsoup 的 Elements.select 是「在所有节点下找」）
+	_ = array.Set("select", func(call goja.FunctionCall) goja.Value {
+		selector := call.Argument(0).String()
+		collected := make([]*html.Node, 0, len(nodes))
+		for _, node := range nodes {
+			collected = append(collected, legadoQuery(node, selector)...)
+		}
+		return vm.ToValue(legadoWrapNodes(vm, collected, baseURL))
+	})
+	_ = array.Set("selectFirst", func(call goja.FunctionCall) goja.Value {
+		selector := call.Argument(0).String()
+		for _, node := range nodes {
+			if found := legadoQuery(node, selector); len(found) > 0 {
+				return vm.ToValue(legadoWrapNode(vm, found[0], baseURL))
+			}
+		}
+		return goja.Null()
+	})
+	_ = array.Set("outerHtml", func(goja.FunctionCall) goja.Value {
+		parts := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			parts = append(parts, legadoElementHTML(node))
+		}
+		return vm.ToValue(strings.Join(parts, "\n"))
+	})
+	_ = array.Set("isEmpty", func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(len(nodes) == 0)
+	})
+	_ = array.Set("remove", func(goja.FunctionCall) goja.Value {
+		for _, node := range nodes {
+			if node.Parent != nil {
+				node.Parent.RemoveChild(node)
+			}
+		}
+		return goja.Undefined()
+	})
 	_ = array.Set("each", func(call goja.FunctionCall) goja.Value {
 		callback, ok := goja.AssertFunction(call.Argument(0))
 		if !ok {
@@ -344,7 +435,68 @@ func legadoWrapNodes(vm *goja.Runtime, nodes []*html.Node, baseURL string) *goja
 		return vm.ToValue(array)
 	})
 	_ = array.Set("forEach", array.Get("each"))
+	// __nodeAt 是给 addAll 用的内部访问器：把第 i 个节点的原生指针交给调用方。
+	_ = array.Set("__nodeAt", func(call goja.FunctionCall) goja.Value {
+		index := int(call.Argument(0).ToInteger())
+		if index < 0 || index >= len(nodes) {
+			return goja.Null()
+		}
+		return vm.ToValue(nodes[index])
+	})
+	// add / addAll：jsoup 的 Elements 是可变的（漫画源常 new 一个再拼几组）
+	_ = array.Set("add", func(call goja.FunctionCall) goja.Value {
+		if node := legadoNodeOf(call.Argument(0)); node != nil {
+			nodes = append(nodes, node)
+		}
+		return vm.ToValue(array)
+	})
+	_ = array.Set("addAll", func(call goja.FunctionCall) goja.Value {
+		source, ok := call.Argument(0).(*goja.Object)
+		if !ok {
+			return vm.ToValue(array)
+		}
+		sizeFn, okSize := goja.AssertFunction(source.Get("size"))
+		nodeFn, okNode := goja.AssertFunction(source.Get("__nodeAt"))
+		if !okSize || !okNode {
+			return vm.ToValue(array)
+		}
+		sizeValue, err := sizeFn(source)
+		if err != nil {
+			return vm.ToValue(array)
+		}
+		total := int(sizeValue.ToInteger())
+		for index := 0; index < total; index++ {
+			value, err := nodeFn(source, vm.ToValue(index))
+			if err != nil || value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
+				continue
+			}
+			if node, okCast := value.Export().(*html.Node); okCast {
+				nodes = append(nodes, node)
+			}
+		}
+		return vm.ToValue(array)
+	})
 	return array
+}
+
+// legadoNodeOf 从脚本传进来的元素对象里取回原生节点。
+func legadoNodeOf(value goja.Value) *html.Node {
+	object, ok := value.(*goja.Object)
+	if !ok {
+		return nil
+	}
+	self, okSelf := goja.AssertFunction(object.Get("__self"))
+	if !okSelf {
+		return nil
+	}
+	result, err := self(object)
+	if err != nil || result == nil || goja.IsNull(result) || goja.IsUndefined(result) {
+		return nil
+	}
+	if node, okCast := result.Export().(*html.Node); okCast {
+		return node
+	}
+	return nil
 }
 
 // legadoJsoupObject 构造 `org.jsoup` 命名空间（脚本里写 org.jsoup.Jsoup）。
@@ -361,13 +513,53 @@ func legadoJsoupObject(vm *goja.Runtime, baseURL string) *goja.Object {
 		return vm.ToValue(legadoWrapNode(vm, legadoParseDocument(text), base))
 	}
 	_ = jsoup.Set("parse", parse)
+	// Jsoup.parseBodyFragment(html)：解析片段并返回 <body>，漫画源用来处理卡片列表。
+	_ = jsoup.Set("parseBodyFragment", func(call goja.FunctionCall) goja.Value {
+		text := call.Argument(0).String()
+		base := baseURL
+		if len(call.Arguments) > 1 && call.Argument(1).String() != "" {
+			base = legadoResolveURL(baseURL, call.Argument(1).String())
+		}
+		body := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
+		container := legadoParseFragment(text)
+		children := make([]*html.Node, 0, 8)
+		for child := container.FirstChild; child != nil; child = child.NextSibling {
+			children = append(children, child)
+		}
+		for _, child := range children {
+			// 片段里的节点已经挂在临时容器上，先摘下来再挂到 body
+			container.RemoveChild(child)
+			body.AppendChild(child)
+		}
+		return vm.ToValue(legadoWrapNode(vm, body, base))
+	})
 	// 少数书源写 Jsoup.connect(url).get()，本地没有连接池，返回空对象
 	_ = jsoup.Set("connect", func(call goja.FunctionCall) goja.Value {
 		return goja.Undefined()
 	})
 	_ = namespace.Set("Jsoup", jsoup)
 	_ = namespace.Set("parse", parse)
+
+	// org.jsoup.select.Elements / org.jsoup.nodes.Element：脚本里偶尔直接 new 出来判类型
+	selectNs := vm.NewObject()
+	_ = selectNs.Set("Elements", legadoClassObject(vm, "org.jsoup.select.Elements", map[string]interface{}{
+		"__ctor": func(call goja.ConstructorCall) *goja.Object {
+			return legadoWrapNodes(vm, nil, baseURL)
+		},
+	}))
+	_ = namespace.Set("select", selectNs)
+	nodesNs := vm.NewObject()
+	_ = nodesNs.Set("Element", legadoClassObject(vm, "org.jsoup.nodes.Element", nil))
+	_ = nodesNs.Set("Document", legadoClassObject(vm, "org.jsoup.nodes.Document", nil))
+	_ = namespace.Set("nodes", nodesNs)
 	return namespace
+}
+
+// legadoNodeRuleContext 以某个元素为根构造规则上下文（元素级 getString 用）。
+func legadoNodeRuleContext(node *html.Node, baseURL string) *legadoRuleContext {
+	ctx := newLegadoRuleContext(legadoElementHTML(node), baseURL, nil)
+	ctx.root = node
+	return ctx
 }
 
 // legadoParseFragment 解析「HTML 片段」，返回一个容纳结果的容器节点。
