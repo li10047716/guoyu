@@ -401,18 +401,10 @@ class _SplashSurfaceState extends State<_SplashSurface>
     // 视频就绪后盖住整个场景（含字标），200ms 淡入避免和场景硬切。
     // 0.7.59：口号不再只留在绘制层——叠在视频上层、片尾淡入，
     // 并配一条底部渐变压暗保证任何画面下都可读。
+    // 0.7.75：角标裁切与竖屏适配（cover / contain）都内聚到
+    // LaunchVideo 给出的层里（见 `_LaunchVideoView`），这里直接使用。
     final video = widget.video;
     if (video != null) {
-      // 0.7.54：视频左上角有生成工具烙的「AI生成」角标（约左 6.5% × 上 5.2%
-      // 的范围）。没有 ffmpeg 可用，就在渲染层解决：放大 1.08 倍并以右下角
-      // 为锚点，把左上角推出窗口外——构图基本不变，画质损失肉眼不可见。
-      final cropped = ClipRect(
-        child: Transform.scale(
-          scale: 1.08,
-          alignment: Alignment(1, 1),
-          child: video,
-        ),
-      );
       final settled = MediaQuery.of(context).disableAnimations || _sloganUp;
       return Stack(
         fit: StackFit.expand,
@@ -425,7 +417,7 @@ class _SplashSurfaceState extends State<_SplashSurface>
             curve: Curves.easeOut,
             builder: (context, value, child) =>
                 Opacity(opacity: value, child: child),
-            child: cropped,
+            child: video,
           ),
           // 底部压暗 + 口号：_videoSloganUp 翻真后 900ms 缓入。
           TweenAnimationBuilder<double>(
