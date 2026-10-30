@@ -717,8 +717,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
             _enterSelection();
           case 'manage-groups':
             unawaited(_manageGroups());
-          case 'sources':
-            unawaited(_openBookSources());
           default:
             _notYet(value);
         }
@@ -741,16 +739,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
               Icon(Icons.checklist_rounded, size: 16),
               SizedBox(width: 8),
               Text('批量管理', style: TextStyle(fontSize: 13)),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'sources',
-          child: Row(
-            children: [
-              Icon(Icons.travel_explore_rounded, size: 16),
-              SizedBox(width: 8),
-              Text('书源管理…', style: TextStyle(fontSize: 13)),
             ],
           ),
         ),
@@ -2507,6 +2495,81 @@ class _MinePage extends StatelessWidget {
                     ),
                   ),
                 ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Material(
+              key: const ValueKey('novel-mine-book-sources'),
+              color: colors.surfaceContainerHighest.withValues(alpha: .42),
+              borderRadius: BorderRadius.circular(14),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () async {
+                  await BookSourceStore.instance.ensureLoaded();
+                  if (!context.mounted) return;
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const BookSourceScreen()),
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: colors.primary.withValues(alpha: .12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.tune_rounded,
+                          size: 19,
+                          color: colors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '书源管理',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            AnimatedBuilder(
+                              animation: BookSourceStore.instance,
+                              builder: (context, _) {
+                                final store = BookSourceStore.instance;
+                                final usable = store.usableSources.length;
+                                return Text(
+                                  store.sources.isEmpty
+                                      ? '导入「阅读 / Legado」格式书源'
+                                      : '已导入 ${store.sources.length} 个 · 可用 $usable 个',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: colors.onSurfaceVariant.withValues(
+                                      alpha: .85,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        size: 20,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
             const _SectionTitle('阅读偏好'),
