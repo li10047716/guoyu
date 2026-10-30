@@ -1649,9 +1649,11 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       (s) => s.key == key,
       orElse: () => const BookSource(key: '', name: '', url: ''),
     );
+    // 0.7.83：`exploreUrl` 是脚本的源要异步求值才有分类。
     final entries = source.key.isEmpty
         ? const <BookSourceExploreEntry>[]
-        : source.exploreEntries;
+        : await widget.gateway.exploreEntries(source);
+    if (!mounted) return;
     if (entries.isEmpty) {
       setState(() => _sourceKey = '');
       return;

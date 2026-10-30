@@ -80,15 +80,29 @@ class BookSourceExploreEntry {
   /// - `名称::地址::样式`（第三段忽略）
   /// - 单行只有地址（名称取地址本身）
   /// - 多条挤在一行、用 `&&` 分隔（不少导出的源这么写，0.7.82 支持）
+  /// - **JSON 数组** `[{"title":"玄幻","url":"..."}]`（0.7.83 支持）
+  ///
+  /// 脚本写法（`@js:` / `<js>`）这里返回空，交给 [NovelGateway.exploreEntries]
+  /// 异步求值——同步解析拿不到脚本结果。
   static List<BookSourceExploreEntry> parseList(String raw) {
     final out = <BookSourceExploreEntry>[];
-    if (raw.trim().isEmpty) return out;
+    final text0 = raw.trim();
+    if (text0.isEmpty) return out;
+    if (isScript(text0)) return out;
+
+    // JSON 数组写法：条目里带 title/url（可能还带 style，忽略）。
+    if (text0.startsWith('[') || text0.startsWith('{')) {
+      final decoded = _decodeJson(text0);
+      if (decoded != null) return _fromJson(decoded);
+      return out;
+    }
+
     var group = '';
     // 0.7.82：有些源的 exploreUrl 把多条压成一行用 `&&` 连接
     // （例如「玄幻::https://a/1.html&&修真::https://a/2.html」）。
     // 以前只按换行切分，整段会被当成一条，地址里混入 `&&名称`，
     // 请求出去就是 HTTP 404——发现页「打开失败」的根因。
-    for (final line in raw.split(RegExp(r'&&|\r?\n'))) {
+    for (final line in text0.split(RegExp(r'&&|\r?\n'))) {
       final text = line.trim();
       if (text.isEmpty) continue;
       final parts = text.split('::');
@@ -113,6 +127,107 @@ class BookSourceExploreEntry {
           group: group,
         ),
       );
+    }
+    return out;
+  }
+
+  /// `exploreUrl` 是否以脚本形式书写（`@js:` 或 `<js>…</js>`）。
+  ///
+  /// Legado 允许整段 `exploreUrl` 用脚本生成条目，例如返回
+  /// `[{title:'玄幻', url:'https://…'}]`。这种写法必须异步求值。
+  static bool isScript(String raw) {
+    final text = raw.trim();
+    return text.startsWith('@js:') || text.startsWith('<js>');
+  }
+
+  /// 从脚本形式的 `exploreUrl` 里剥出可执行的代码。
+  static String scriptCode(String raw) {
+    var text = raw.trim();
+    if (text.startsWith('@js:')) text = text.substring(4);
+    if (text.startsWith('<js>')) text = text.substring(4);
+    if (text.endsWith('</js>')) {
+      text = text.substring(0, text.length - 5);
+    }
+    return text.trim();
+  }
+
+  /// 把脚本求值结果（JSON 数组 / 文本列表）解析成条目。
+  static List<BookSourceExploreEntry> parseResolved(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return const [];
+    if (text.startsWith('[') || text.startsWith('{')) {
+      final decoded = _decodeJson(text);
+      if (decoded != null) {
+        final fromJson = _fromJson(decoded);
+        if (fromJson.isNotEmpty) return fromJson;
+      }
+    }
+    return parseList(text);
+  }
+
+  static Object? _decodeJson(String text) {
+    try {
+      return jsonDecode(text);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// `[{title:'x', url:'y'}]` → 条目；也兼容带分组的 `{title, url}` 映射。
+  static List<BookSourceExploreEntry> _fromJson(Object? decoded) {
+    final out = <BookSourceExploreEntry>[];
+    void take(Object? row, {String group = ''}) {
+      if (row is String) {
+        final text = row.trim();
+        if (text.isEmpty) return;
+        if (text.contains('::')) {
+          out.addAll(parseList(text));
+        } else if (text.contains('://')) {
+          out.add(BookSourceExploreEntry(name: _labelOfUrl(text), url: text));
+        }
+        return;
+      }
+      if (row is! Map) return;
+      final title =
+          (row['title'] ?? row['name'] ?? row['group'] ?? '').toString().trim();
+      final url = (row['url'] ?? row['link'] ?? '').toString().trim();
+      if (url.isEmpty) {
+        // 只有标题 = 分组标题
+        if (title.isNotEmpty) {
+          out.add(BookSourceExploreEntry(name: title, url: '', group: title));
+        }
+        return;
+      }
+      out.add(
+        BookSourceExploreEntry(
+          name: title.isEmpty ? _labelOfUrl(url) : title,
+          url: url,
+          group: group,
+        ),
+      );
+    }
+
+    if (decoded is List) {
+      for (final row in decoded) {
+        take(row);
+      }
+      return out;
+    }
+    if (decoded is Map) {
+      // `{ '分组名': [{title,url}], ... }` 或单个 `{title,url}`
+      if (decoded.containsKey('url') || decoded.containsKey('title')) {
+        take(decoded);
+        return out;
+      }
+      decoded.forEach((key, value) {
+        if (value is List) {
+          for (final row in value) {
+            take(row, group: '$key');
+          }
+        } else {
+          take(value, group: '$key');
+        }
+      });
     }
     return out;
   }
@@ -207,8 +322,14 @@ class BookSource {
   }
 
   /// `exploreUrl` 解析出来的发现条目（含分组标题）。
+  ///
+  /// 只覆盖「纯文本」写法；`exploreUrl` 是脚本（`@js:` / `<js>`）时这里
+  /// 返回空列表，要拿条目得走 [NovelGateway.exploreEntries]（异步求值）。
   List<BookSourceExploreEntry> get exploreEntries =>
       BookSourceExploreEntry.parseList(exploreUrl);
+
+  /// `exploreUrl` 是不是一段脚本（Legado 允许整段走 JS 生成条目）。
+  bool get exploreIsScript => BookSourceExploreEntry.isScript(exploreUrl);
 
   BookSource copyWith({
     String? name,

@@ -145,6 +145,41 @@ void main() {
       expect(entries[1].group, '🔥 分类');
       expect(entries[1].url, 'https://a.com/x/1.html');
     });
+
+    test('0.7.83：JSON 数组写法', () {
+      final entries = BookSourceExploreEntry.parseList(
+        '[{"title":"我的书架","url":"https://a.com/shelf"},'
+        '{"title":"今日限免","url":"https://a.com/free"}]',
+      );
+      expect(entries, hasLength(2));
+      expect(entries[0].name, '我的书架');
+      expect(entries[1].url, 'https://a.com/free');
+    });
+
+    test('0.7.83：脚本写法交异步求值，同步解析返回空', () {
+      const raw = '<js>let a=[];a.push({title:"玄幻",url:"https://a.com/1"});'
+          'JSON.stringify(a)</js>';
+      expect(BookSourceExploreEntry.isScript(raw), isTrue);
+      expect(BookSourceExploreEntry.parseList(raw), isEmpty);
+      expect(
+        BookSourceExploreEntry.scriptCode(raw).startsWith('let a=[]'),
+        isTrue,
+      );
+      expect(BookSourceExploreEntry.scriptCode(raw).endsWith('</js>'), isFalse);
+      // 脚本求值结果（JSON）再解析
+      final resolved = BookSourceExploreEntry.parseResolved(
+        '[{"title":"玄幻","url":"https://a.com/1"}]',
+      );
+      expect(resolved.single.name, '玄幻');
+      expect(resolved.single.url, 'https://a.com/1');
+    });
+
+    test('0.7.83：脚本返回文本列表也能解析', () {
+      final resolved = BookSourceExploreEntry.parseResolved(
+        '玄幻::https://a.com/1\n修真::https://a.com/2',
+      );
+      expect([for (final e in resolved) e.name], ['玄幻', '修真']);
+    });
   });
 
   group('规则引擎', () {

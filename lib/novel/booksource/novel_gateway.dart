@@ -10,6 +10,7 @@ import '../../core/novel_models.dart';
 import 'book_source.dart';
 import 'book_source_engine.dart';
 import 'book_source_store.dart';
+import 'legado_script.dart';
 
 /// 搜索结果里来自某个书源的失败信息（界面可选展示）。
 class BookSourceFailure {
@@ -128,11 +129,41 @@ class NovelGateway {
   }
 
   /// 自定义书源里带「发现」入口的（可用于发现页的源切换）。
+  ///
+  /// 0.7.83：`exploreUrl` 写成脚本的源也算——它虽然同步解析不出条目，
+  /// 但求值后能拿到分类，不该被排除在发现源之外。
   Future<List<BookSource>> exploreSources() async {
     await store.ensureLoaded();
     return store.usableSources
-        .where((source) => source.exploreEntries.any((e) => !e.isHeader))
+        .where(
+          (source) =>
+              source.exploreIsScript ||
+              source.exploreEntries.any((e) => !e.isHeader),
+        )
         .toList(growable: false);
+  }
+
+  /// 取某个源的发现条目。
+  ///
+  /// 纯文本 `exploreUrl` 直接同步解析；脚本形式（`@js:` / `<js>`）交给
+  /// 原生 JS 运行时求值，再把返回的 JSON 数组 / 文本列表转成条目。
+  Future<List<BookSourceExploreEntry>> exploreEntries(
+    BookSource source,
+  ) async {
+    if (!source.exploreIsScript) return source.exploreEntries;
+    final code = BookSourceExploreEntry.scriptCode(source.exploreUrl);
+    if (code.isEmpty) return const [];
+    try {
+      final result = await LegadoScript.run(
+        source,
+        code,
+        baseUrl: source.url,
+      );
+      return BookSourceExploreEntry.parseResolved(result.value);
+    } catch (error) {
+      debugPrint('发现页脚本求值失败（${source.name}）：$error');
+      return const [];
+    }
   }
 
   Future<BookSource> _require(String key) async {

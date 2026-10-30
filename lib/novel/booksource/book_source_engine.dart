@@ -13,6 +13,7 @@ import '../../core/novel_models.dart';
 import 'book_source.dart';
 import 'book_source_http.dart';
 import 'book_source_rules.dart';
+import 'legado_script.dart';
 import 'rule_engine.dart';
 
 /// 书籍 / 章节 ID 的编解码。
@@ -134,6 +135,25 @@ class BookSourceEngine {
     }
 
     var address = _expand(address0, {'page': '$page'}, charset: source.charset);
+    // 0.7.83：单条发现地址本身可以是脚本（`@js:` / `<js>`），求值后才是 URL。
+    // 以前直接拿去 resolveUrl，会报「地址不合法：@js:…」。
+    if (BookSourceExploreEntry.isScript(address)) {
+      final resolved = await LegadoScript.run(
+        source,
+        BookSourceExploreEntry.scriptCode(address),
+        baseUrl: source.url,
+        page: page,
+      );
+      final text = resolved.value.trim();
+      if (text.isEmpty) {
+        throw FetchFailure('发现分类的脚本没有返回地址');
+      }
+      // 脚本可能返回多条（JSON 数组 / 逗号分隔），这一页只用第一条。
+      final parsed = BookSourceExploreEntry.parseResolved(text);
+      address = parsed.isNotEmpty
+          ? parsed.first.url
+          : text.split('\n').first.trim();
+    }
     address = RuleEngine.resolveUrl(source.url, address);
 
     // 纯脚本列表规则（`@js:` 整条）自己发请求，不用先抓页面，
