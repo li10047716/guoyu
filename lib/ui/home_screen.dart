@@ -2000,18 +2000,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     saveUserChange(context, () => _applyMultiSources(ids));
   }
 
-  /// 站源胶囊行（0.7.36，用户截图）：内容区顶部横排——
-  /// 各站源分组胶囊，选中项实心主色胶囊。
-  ///
-  /// 0.7.45：Windows 桌面端改成由窗口标题栏渲染（[_titleBarLeading]），
-  /// 0.7.55：标题栏不再放胶囊，桌面端改走侧栏「站源」入口
-  /// （[_pickSourceGroup]），这里只留给手机端/其它平台使用。
-  /// 0.7.58（用户要求）：站源只做互斥单选，去掉「全部站源」多选胶囊。
-  Widget _sourcePillRow() => Padding(
-    padding: const EdgeInsets.fromLTRB(24, 4, 24, 6),
-    child: _sourcePills(),
-  );
-
   /// Windows 标题栏左侧内容（0.7.45）：logo + 应用名。
   ///
   /// 0.7.55（用户要求）：站源胶囊从这里移走（顶栏不美观），
@@ -2066,65 +2054,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
           ),
           const Spacer(),
-        ],
-      ),
-    );
-  }
-
-  /// 站源胶囊横排本体。
-  ///
-  /// [compact] 用于窗口标题栏：胶囊矮一点（30px），文字略小，
-  /// 保证 40px 的标题栏里不溢出。
-  Widget _sourcePills({bool compact = false}) {
-    final groups = _sourceGroups;
-    final colors = Theme.of(context).colorScheme;
-    // 0.7.58：互斥单选——单选时当前源高亮；多源聚合是旧版残留
-    // （新 UI 不再提供多选入口），此时不亮任何胶囊。
-    final currentId = _multiSources.isEmpty ? _group.id : '';
-    Widget pill(String id, String label) {
-      final selected = id == currentId;
-      return InkWell(
-        key: ValueKey('source-pill-$id'),
-        borderRadius: BorderRadius.circular(18),
-        onTap: () {
-          final ids = <String>[
-            for (final site in widget.store.sources)
-              if (site.groupId == id) site.id,
-          ];
-          if (ids.isEmpty) return;
-          saveUserChange(context, () => _applyMultiSources(ids));
-        },
-        child: Container(
-          height: compact ? 30 : 34,
-          padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 14),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? colors.primary : colors.surfaceContainer,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: selected ? colors.primary : colors.outlineVariant,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: compact ? 12 : 12.5,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-              color: selected ? Colors.white : colors.onSurfaceVariant,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (final group in groups) ...[
-            pill(group.id, group.name),
-            const SizedBox(width: 8),
-          ],
         ],
       ),
     );
@@ -2635,9 +2564,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     return Column(
       children: [
-        // 0.7.36：站源切换入口统一为顶部胶囊行（侧栏里已移除）。
-        // 0.7.45：Windows 桌面端已抬进窗口标题栏，这里不再重复渲染。
-        if (rail && !_usesTitleBar) _sourcePillRow(),
         CatalogFilters(
           key: ValueKey('filters-${_group.id}'),
           categories: _displayCategories,
@@ -2694,12 +2620,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Widget _findPage({required bool selectionInBody}) {
     final television = AppLayout.isTelevision(context);
     final items = _visible;
-    final rail = MediaQuery.sizeOf(context).width >= 840 && !television;
     return Column(
       children: [
-        // 0.7.36：站源切换入口统一为顶部胶囊行（侧栏里已移除）。
-        // 0.7.45：Windows 桌面端已抬进窗口标题栏，这里不再重复渲染。
-        if (rail && !_usesTitleBar) _sourcePillRow(),
         _findHeader(),
         ..._catalogBody(
           items: items,
@@ -2837,7 +2759,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       slivers: [
                         // 0.7.36（用户截图 D01）：桌面推荐页网格上方插
                         // 主推横幅 + 「大家都在看 · 查看全部」标题行。
-                        if (banner != null) SliverToBoxAdapter(child: banner!),
+                        if (banner != null) SliverToBoxAdapter(child: banner),
                         if (banner != null && onBrowseAll != null)
                           SliverToBoxAdapter(
                             child: Padding(
