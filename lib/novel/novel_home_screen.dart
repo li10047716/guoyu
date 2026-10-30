@@ -34,8 +34,11 @@ enum _NovelSection {
   String get key => 'novel-section-$name';
 }
 
-/// 书架筛选范围：三个内置状态 + 任意自定义分组。
-enum _ShelfScope { all, reading, unread, custom }
+/// 书架筛选范围：默认全部，或某个自定义分组。
+///
+/// 0.7.82（用户要求）：去掉「在读 / 未开始」两个内置筛选项，书架只按
+/// 自定义分组筛选。
+enum _ShelfScope { all, custom }
 
 /// 小说界面（0.7.61 起；0.7.66 重排版式；0.7.67 加导入/批量/分组/红点）。
 ///
@@ -539,65 +542,52 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     );
   }
 
-  /// 右上工具区（0.7.81，用户要求）：书架页只留「视图 / 搜索」两钮胶囊 +
-  /// 单独一枚「更多」；分组筛选收进「更多」菜单，顶部不再摆「全部▾」。
+  /// 右上工具区（0.7.82，用户要求）：视图切换 / 搜索 / 更多 各自一枚
+  /// **独立圆形按钮**，不再挤在一个长胶囊里。
   Widget _toolbar(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     final onShelf = _section == _NovelSection.shelf;
-    final pill = BoxDecoration(
-      color: colors.surfaceContainerHighest.withValues(alpha: .5),
-      borderRadius: BorderRadius.circular(18),
-    );
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          height: 36,
-          decoration: pill,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 视图切换只对书架有意义。
-              if (onShelf) ...[
-                _toolIcon(
-                  context,
-                  key: const ValueKey('novel-view-toggle'),
-                  icon: _listView
-                      ? Icons.view_module_rounded
-                      : Icons.view_list_rounded,
-                  tooltip: _listView ? '切换为网格' : '切换为列表',
-                  onTap: () => setState(() => _listView = !_listView),
-                ),
-                _toolDivider(colors),
-              ],
-              _toolIcon(
-                context,
-                key: const ValueKey('novel-search-open'),
-                icon: Icons.search_rounded,
-                tooltip: '搜索',
-                onTap: _openSearch,
-              ),
-            ],
+        // 视图切换只对书架有意义。
+        if (onShelf) ...[
+          _roundTool(
+            context,
+            key: const ValueKey('novel-view-toggle'),
+            icon: _listView
+                ? Icons.view_module_rounded
+                : Icons.view_list_rounded,
+            tooltip: _listView ? '切换为网格' : '切换为列表',
+            onTap: () => setState(() => _listView = !_listView),
           ),
+          const SizedBox(width: 8),
+        ],
+        _roundTool(
+          context,
+          key: const ValueKey('novel-search-open'),
+          icon: Icons.search_rounded,
+          tooltip: '搜索',
+          onTap: _openSearch,
         ),
         const SizedBox(width: 8),
         Container(
           height: 36,
           width: 36,
-          decoration: pill,
+          decoration: _roundDecoration(context),
           child: _moreMenu(context),
         ),
       ],
     );
   }
 
-  Widget _toolDivider(ColorScheme colors) => Container(
-    width: .8,
-    height: 16,
-    color: colors.outlineVariant.withValues(alpha: .7),
+  BoxDecoration _roundDecoration(BuildContext context) => BoxDecoration(
+    color: Theme.of(
+      context,
+    ).colorScheme.surfaceContainerHighest.withValues(alpha: .5),
+    shape: BoxShape.circle,
   );
 
-  Widget _toolIcon(
+  Widget _roundTool(
     BuildContext context, {
     required Key key,
     required IconData icon,
@@ -605,14 +595,19 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     required VoidCallback onTap,
   }) {
     final colors = Theme.of(context).colorScheme;
-    return IconButton(
-      key: key,
-      tooltip: tooltip,
-      visualDensity: VisualDensity.compact,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-      onPressed: onTap,
-      icon: Icon(icon, size: 18, color: colors.onSurfaceVariant),
+    return Container(
+      height: 36,
+      width: 36,
+      decoration: _roundDecoration(context),
+      child: IconButton(
+        key: key,
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+        onPressed: onTap,
+        icon: Icon(icon, size: 18, color: colors.onSurfaceVariant),
+      ),
     );
   }
 
@@ -643,21 +638,18 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         }
       },
       itemBuilder: (context) => [
-        // 书架筛选（0.7.81 从顶部「全部▾」挪进来）：全部 / 在读 / 未开始 /
-        // 各自定义分组，当前项打勾。
-        if (onShelf) ...[
-          for (final scope in const [
-            _ShelfScope.all,
-            _ShelfScope.reading,
-            _ShelfScope.unread,
-          ])
+        // 书架筛选（0.7.82 用户要求）：只留自定义分组，「全部 / 在读 /
+        // 未开始」三个内置项已删除；没建过分组时整块都不出现。
+        if (onShelf && groups.isNotEmpty) ...[
+          for (final group in groups)
             PopupMenuItem(
-              value: scope.name,
+              value: 'group:${group.id}',
               child: Row(
                 children: [
                   SizedBox(
                     width: 26,
-                    child: _scope == scope && _customGroupId == null
+                    child: _scope == _ShelfScope.custom &&
+                            _customGroupId == group.id
                         ? Icon(
                             Icons.check_rounded,
                             size: 16,
@@ -665,43 +657,18 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
                           )
                         : null,
                   ),
-                  Text(
-                    _scopeLabelOf(scope),
-                    style: const TextStyle(fontSize: 13),
+                  Expanded(
+                    child: Text(
+                      group.name,
+                      style: const TextStyle(fontSize: 13),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
             ),
-          if (groups.isNotEmpty) ...[
-            for (final group in groups)
-              PopupMenuItem(
-                value: 'group:${group.id}',
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 26,
-                      child: _scope == _ShelfScope.custom &&
-                              _customGroupId == group.id
-                          ? Icon(
-                              Icons.check_rounded,
-                              size: 16,
-                              color: colors.primary,
-                            )
-                          : null,
-                    ),
-                    Expanded(
-                      child: Text(
-                        group.name,
-                        style: const TextStyle(fontSize: 13),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            const PopupMenuDivider(),
-          ],
+          const PopupMenuDivider(),
         ],
         PopupMenuItem(
           value: 'import',
@@ -749,19 +716,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
 
   // ── 书架筛选 / 多选 / 导入 ──────────────────────────────────────────────
 
-  String _scopeLabelOf(_ShelfScope scope) => switch (scope) {
-    _ShelfScope.all => '全部',
-    _ShelfScope.reading => '在读',
-    _ShelfScope.unread => '未开始',
-    _ShelfScope.custom => '分组',
-  };
-
-
   void _onScopeSelected(String value) {
-    if (value == 'manage') {
-      unawaited(_manageGroups());
-      return;
-    }
     setState(() {
       if (value.startsWith('group:')) {
         _scope = _ShelfScope.custom;
@@ -769,11 +724,7 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         return;
       }
       _customGroupId = null;
-      _scope = switch (value) {
-        'reading' => _ShelfScope.reading,
-        'unread' => _ShelfScope.unread,
-        _ => _ShelfScope.all,
-      };
+      _scope = _ShelfScope.all;
     });
   }
 
@@ -967,14 +918,6 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
     final entries = NovelStore.instance.shelf;
     return switch (_scope) {
       _ShelfScope.all => entries,
-      _ShelfScope.reading => [
-        for (final entry in entries)
-          if (entry.progress != null) entry,
-      ],
-      _ShelfScope.unread => [
-        for (final entry in entries)
-          if (entry.progress == null) entry,
-      ],
       _ShelfScope.custom => [
         for (final entry in entries)
           if (_customGroupId != null && entry.groups.contains(_customGroupId))
@@ -1267,14 +1210,6 @@ class _ShelfTab extends StatelessWidget {
         }
         final visible = switch (scope) {
           _ShelfScope.all => entries,
-          _ShelfScope.reading => [
-            for (final entry in entries)
-              if (entry.progress != null) entry,
-          ],
-          _ShelfScope.unread => [
-            for (final entry in entries)
-              if (entry.progress == null) entry,
-          ],
           _ShelfScope.custom => [
             for (final entry in entries)
               if (customGroupId != null && entry.groups.contains(customGroupId))
@@ -1285,7 +1220,7 @@ class _ShelfTab extends StatelessWidget {
           return const _EmptyState(
             icon: Icons.filter_alt_off_rounded,
             title: '这个分组还没有书',
-            hint: '右上角切回「全部」看看',
+            hint: '「⋮」里切回「全部」看看',
           );
         }
         void tap(NovelShelfEntry entry) {
@@ -1759,10 +1694,20 @@ class _DiscoverPageState extends State<_DiscoverPage> {
       final items = await widget.gateway.explore(_sourceKey, url, page: page);
       if (!mounted || _entryUrl != url) return;
       setState(() {
-        _customBooks = more ? [..._customBooks, ...items] : items;
+        // 0.7.82：有些源的发现地址里没有 `{{page}}`（页码写死在 URL 里），
+        // 翻页会拿回同一批书。这里按 key 去重，并在一页没有新书时判定到底，
+        // 避免「加载更多」无限重复同一批内容。
+        final merged = more ? [..._customBooks, ...items] : items;
+        final seen = <String>{};
+        final deduped = <Novel>[
+          for (final novel in merged)
+            if (seen.add(novel.key)) novel,
+        ];
+        final added = deduped.length - (more ? _customBooks.length : 0);
+        _customBooks = deduped;
         _customPage = page;
         // 返回空页或者不足一页时就没有下一页了，避免无限翻。
-        _customHasMore = items.length >= 10;
+        _customHasMore = items.length >= 10 && added > 0;
         _customLoading = false;
         _customLoadingMore = false;
       });
@@ -2349,70 +2294,6 @@ class _MinePage extends StatelessWidget {
               ],
             ),
             const _SectionTitle('书源'),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: colors.surfaceContainerHighest.withValues(alpha: .42),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: colors.primary.withValues(alpha: .12),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(
-                      Icons.menu_book_rounded,
-                      size: 19,
-                      color: colors.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          '笔趣阁',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          '内置 · 搜索 / 详情 / 目录 / 正文',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: colors.onSurfaceVariant.withValues(
-                              alpha: .85,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colors.primary.withValues(alpha: .12),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '在用',
-                      style: TextStyle(fontSize: 11, color: colors.primary),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
             Material(
               key: const ValueKey('novel-mine-book-sources'),
               color: colors.surfaceContainerHighest.withValues(alpha: .42),

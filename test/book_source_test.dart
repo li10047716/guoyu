@@ -109,6 +109,44 @@ void main() {
     });
   });
 
+  group('exploreUrl 解析', () {
+    test('按换行拆条目', () {
+      final entries = BookSourceExploreEntry.parseList(
+        '玄幻::https://a.com/x/1.html\n修真::https://a.com/z/1.html',
+      );
+      expect(entries, hasLength(2));
+      expect(entries[0].name, '玄幻');
+      expect(entries[0].url, 'https://a.com/x/1.html');
+      expect(entries[1].url, 'https://a.com/z/1.html');
+    });
+
+    test('0.7.82：多条压在一行用 && 连接也能拆开', () {
+      // 番茄源那种写法：整段 exploreUrl 没有换行，全用 && 连接。
+      // 以前会把 `&&修真小说` 一起当成地址，请求出去直接 404。
+      final entries = BookSourceExploreEntry.parseList(
+        '玄幻小说::https://a.com/x/1.html&&修真小说::https://a.com/z/1.html'
+        '&&排行::https://a.com/rank/1.html',
+      );
+      expect(entries, hasLength(3));
+      expect([for (final e in entries) e.name], ['玄幻小说', '修真小说', '排行']);
+      expect([for (final e in entries) e.url], [
+        'https://a.com/x/1.html',
+        'https://a.com/z/1.html',
+        'https://a.com/rank/1.html',
+      ]);
+    });
+
+    test('分组标题与 && 混用', () {
+      final entries = BookSourceExploreEntry.parseList(
+        '🔥 分类::&&玄幻::https://a.com/x/1.html&&修真::https://a.com/z/1.html',
+      );
+      expect(entries, hasLength(3));
+      expect(entries.first.isHeader, isTrue);
+      expect(entries[1].group, '🔥 分类');
+      expect(entries[1].url, 'https://a.com/x/1.html');
+    });
+  });
+
   group('规则引擎', () {
     test('CSS：取链接并补成绝对地址', () {
       final ctx = RuleContext(body: _html, url: _baseUrl);

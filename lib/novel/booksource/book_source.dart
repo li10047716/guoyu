@@ -75,15 +75,20 @@ class BookSourceExploreEntry {
 
   /// 解析整段 `exploreUrl`。
   ///
-  /// 兼容三种常见写法：
+  /// 兼容四种常见写法：
   /// - `名称::地址`
   /// - `名称::地址::样式`（第三段忽略）
   /// - 单行只有地址（名称取地址本身）
+  /// - 多条挤在一行、用 `&&` 分隔（不少导出的源这么写，0.7.82 支持）
   static List<BookSourceExploreEntry> parseList(String raw) {
     final out = <BookSourceExploreEntry>[];
     if (raw.trim().isEmpty) return out;
     var group = '';
-    for (final line in raw.split(RegExp(r'\r?\n'))) {
+    // 0.7.82：有些源的 exploreUrl 把多条压成一行用 `&&` 连接
+    // （例如「玄幻::https://a/1.html&&修真::https://a/2.html」）。
+    // 以前只按换行切分，整段会被当成一条，地址里混入 `&&名称`，
+    // 请求出去就是 HTTP 404——发现页「打开失败」的根因。
+    for (final line in raw.split(RegExp(r'&&|\r?\n'))) {
       final text = line.trim();
       if (text.isEmpty) continue;
       final parts = text.split('::');
