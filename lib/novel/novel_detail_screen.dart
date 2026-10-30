@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/novel_models.dart';
 import 'package:duanju_app/novel/booksource/novel_gateway.dart';
+import 'package:duanju_app/novel/novel_cover.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_reader_screen.dart';
 import 'package:duanju_app/novel/novel_store.dart';
@@ -415,33 +416,9 @@ class _NovelDetailScreenState extends State<NovelDetailScreen> {
     return '$bytes B';
   }
 
-  Widget _cover(ColorScheme colors) {    final url = _novel.cover;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: SizedBox(
-        width: 108,
-        height: 144,
-        child: url.isEmpty
-            ? _coverPlaceholder(colors)
-            : Image.network(
-                url,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _coverPlaceholder(colors),
-                loadingBuilder: (context, child, progress) =>
-                    progress == null ? child : _coverPlaceholder(colors),
-              ),
-      ),
-    );
-  }
-
-  Widget _coverPlaceholder(ColorScheme colors) => Container(
-    color: colors.surfaceContainerHighest,
-    alignment: Alignment.center,
-    child: Icon(
-      Icons.menu_book_rounded,
-      color: colors.onSurfaceVariant.withValues(alpha: .5),
-    ),
-  );
+  /// 0.7.88：走公共 [NovelCover]，跟书架/搜索共用同一套 Referer 与占位逻辑。
+  Widget _cover(ColorScheme colors) =>
+      NovelCover(url: _novel.cover, width: 108, height: 144, radius: 10);
 
   Widget _chip(String label, ColorScheme colors) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),

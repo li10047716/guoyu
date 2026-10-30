@@ -11,6 +11,7 @@ import 'package:duanju_app/novel/booksource/book_source.dart';
 import 'package:duanju_app/novel/booksource/book_source_screen.dart';
 import 'package:duanju_app/novel/booksource/book_source_store.dart';
 import 'package:duanju_app/novel/booksource/novel_gateway.dart';
+import 'package:duanju_app/novel/novel_cover.dart';
 import 'package:duanju_app/novel/novel_detail_screen.dart';
 import 'package:duanju_app/novel/novel_library.dart';
 import 'package:duanju_app/novel/novel_store.dart';
@@ -1123,7 +1124,9 @@ class _NovelHomeScreenState extends State<NovelHomeScreen> {
         final novel = _results[index];
         return ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.menu_book_rounded),
+          minVerticalPadding: 8,
+          // 0.7.88：搜索结果也给封面，跟书架/发现一致；拿不到就落回书本图标。
+          leading: NovelCover(url: novel.cover, width: 44, height: 60),
           title: Text(
             novel.title,
             maxLines: 1,
@@ -1286,10 +1289,7 @@ class _ShelfCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: _cover(context, novel, colors),
-                  ),
+                  NovelCover(url: novel.cover, radius: 10),
                   if (selected)
                     Container(
                       decoration: BoxDecoration(
@@ -1418,14 +1418,7 @@ class _ShelfRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
           child: Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: SizedBox(
-                  width: 46,
-                  height: 62,
-                  child: _cover(context, novel, colors),
-                ),
-              ),
+              NovelCover(url: novel.cover, width: 46, height: 62),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -1487,25 +1480,6 @@ class _ShelfRow extends StatelessWidget {
       ),
     );
   }
-}
-
-Widget _cover(BuildContext context, Novel novel, ColorScheme colors) {
-  final placeholder = Container(
-    color: colors.surfaceContainerHighest,
-    alignment: Alignment.center,
-    child: Icon(
-      Icons.menu_book_rounded,
-      color: colors.onSurfaceVariant.withValues(alpha: .45),
-    ),
-  );
-  if (novel.cover.isEmpty) return placeholder;
-  return Image.network(
-    novel.cover,
-    fit: BoxFit.cover,
-    errorBuilder: (_, _, _) => placeholder,
-    loadingBuilder: (context, child, loading) =>
-        loading == null ? child : placeholder,
-  );
 }
 
 // ── 发现 / 探索 / 我的 ────────────────────────────────────────────────────
@@ -1986,12 +1960,10 @@ class _DiscoverPageState extends State<_DiscoverPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: _cover(context, novel, colors),
-                  ),
+                child: NovelCover(
+                  url: novel.cover,
+                  width: double.infinity,
+                  radius: 10,
                 ),
               ),
               const SizedBox(height: 6),
